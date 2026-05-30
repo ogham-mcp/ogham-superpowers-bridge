@@ -2,6 +2,8 @@
 # Commit staged lessons to Ogham (scribe spec). Best-effort; retains lines whose store fails so
 # nothing is lost; Ogham's native surprise/auto-link dedups. Run by the orchestrator (N=3 +
 # branch-finish) and by the SessionStart hook for orphans.
+# Note: if killed mid-flush, already-stored lines may be re-stored on the next run; Ogham's native
+# surprise/auto-link makes that an idempotent no-op (empty commit:/task: tag values are accepted).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,14 +32,19 @@ for ln in lines:
         d = json.loads(ln)
     except Exception:
         continue  # drop a corrupt line (capture always writes valid JSON)
+    text = (d.get("text") or "").strip()
+    if not text:
+        continue  # skip empty-text lines (nothing useful to store)
     tags = "type:%s,commit:%s,task:%s" % (d.get("type",""), d.get("commit",""), d.get("source_task",""))
-    r = subprocess.run([ogham, "store", d.get("text",""), "--profile", profile,
+    r = subprocess.run([ogham, "store", text, "--profile", profile,
                         "--source", "superpowers-scribe", "--tags", tags],
                        capture_output=True, text=True)
     if r.returncode == 0:
         flushed += 1
     else:
         failed += 1; kept.append(ln)
+        if r.stderr.strip():
+            print("flush: store failed: %s" % r.stderr.strip()[:200], file=sys.stderr)
 with open(buf, "w", encoding="utf-8") as f:
     if kept:
         f.write("\n".join(kept) + "\n")

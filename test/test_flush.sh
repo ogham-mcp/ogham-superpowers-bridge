@@ -33,6 +33,13 @@ grep -q 'FAILME' "$buf" || { echo "  retain: expected FAILME line retained"; rc=
 grep -q 'keep A' "$buf" && { echo "  clear: expected 'keep A' removed after success"; rc=1; }
 echo "$out" | grep -qi 'flushed 1' || { echo "  summary: expected 'flushed 1', got '$out'"; rc=1; }
 
+# all-success -> buffer fully cleared
+printf '%s\n' '{"type":"decision","text":"ok one","when":"t","commit":"abc","source_task":"t1","tags":["type:decision"]}' > "$buf"
+printf '%s\n' '{"type":"decision","text":"ok two","when":"t","commit":"abc","source_task":"t2","tags":["type:decision"]}' >> "$buf"
+out3="$(OGHAM_BIN="$fake" OGHAM_CALLS="${work}/calls3" SUPERPOWERS_BUFFER="$buf" SUPERPOWERS_PROFILE="superpowers-test" bash "$FLUSH" 2>&1)"
+[ -s "$buf" ] && { echo "  all-success: expected buffer fully cleared"; rc=1; }
+echo "$out3" | grep -qi 'flushed 2' || { echo "  all-success: expected 'flushed 2', got '$out3'"; rc=1; }
+
 # empty buffer -> nothing to flush
 : > "$buf"
 out2="$(OGHAM_BIN="$fake" OGHAM_CALLS="$calls" SUPERPOWERS_BUFFER="$buf" SUPERPOWERS_PROFILE="superpowers-test" bash "$FLUSH" 2>&1)"

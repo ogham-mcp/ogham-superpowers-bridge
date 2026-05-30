@@ -609,3 +609,26 @@ dispatch (plus the flush cadence). Key properties:
 This makes the bridge actually activate during a superpowers run; it is the prerequisite for the live
 end-to-end proving scenario (a fresh superpowers session whose orchestrator recalls before each
 subagent dispatch).
+
+### 14.8b Explicit profile — never switch the global active profile (round 4)
+**Supersedes** §4.2's "profile created eagerly on the SessionStart hook (`ogham profile switch <name>`)"
+and §14.5 item 1's "profile bootstrap via `ogham profile switch`."
+
+**Finding (live, 2026-05-30):** the SessionStart hook ran `ogham profile switch superpowers-<slug>`,
+which mutates the **global** `~/.ogham/active_profile` and was never restored. After a bridge session
+the user's active profile silently stayed on the bridge profile, so their *other* Ogham usage (other
+terminals, `save-learnings`/`ogham-research`) read/wrote the wrong profile. A real footgun, hit during
+the run2 demo.
+
+**Resolution:** the bridge **never switches the active profile.** It already passes `--profile`
+explicitly on every recall/capture/flush, and `ogham store --profile` auto-creates the profile on first
+write — so the eager switch was both unnecessary and harmful. The SessionStart hook now:
+- reads (does not change) the current active profile via `ogham profile current`, and
+- states, in the injected banner, **both** the per-repo profile the bridge uses (`superpowers-<slug>`)
+  **and** that the active profile is unchanged (naming it when known).
+
+Consequences: per-repo isolation is now visible and enforced by construction — each repo's lessons live
+in `superpowers-<repo-slug>`, addressed explicitly; **memory cannot cross-pollute between repos** except
+by a deliberate `ogham export`/`import`. There is no hidden global state to "forget," and no session-end
+"restore" step is needed because nothing was changed. The SKILL.md recall example and the protocol both
+pass `--profile` explicitly; nothing relies on the active profile.

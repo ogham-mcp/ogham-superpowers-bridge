@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SessionStart hook (design §4.2, §13.3, §14.5). Best-effort: ALWAYS exits 0.
-# 1) eager per-repo profile bootstrap  2) ogham-version drift check  3) orphan-buffer report.
+# 1) report the per-repo profile (NO active-profile switch)  2) ogham-version drift check  3) orphan-buffer report.
 set -uo pipefail   # deliberately NOT -e: every failure must still reach exit 0
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

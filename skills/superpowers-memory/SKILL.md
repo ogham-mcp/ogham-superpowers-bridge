@@ -27,7 +27,8 @@ If resolution fails, **degrade gracefully**: `OGHAM` is empty, so guard every `o
 
 Before dispatching a subagent, recall lessons scoped to the current task and fold the result into the
 **curated prompt** you are about to send (do NOT edit files on disk; do NOT let the subagent call
-this skill). Use the active per-repo profile (bootstrapped by the SessionStart hook).
+this skill). Pass `--profile` explicitly using the per-repo profile named in the SessionStart banner
+(`superpowers-<repo-slug>`) — the bridge never relies on the active Ogham profile.
 
 ```bash
 # Relevance-ranked top-K lessons for this task. `ogham search` takes a POSITIONAL query (not --query).

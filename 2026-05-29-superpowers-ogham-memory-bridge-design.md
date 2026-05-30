@@ -561,7 +561,9 @@ The SessionStart hook (needed regardless of benchmark outcome) does three things
 2. **Binary drift check** — parse `ogham version` JSON `.version`, compare to `.tools/.version`; on
    mismatch, print a one-line stdout notice suggesting `scripts/install-tools.sh --upgrade`. Never block.
 3. **Orphan-flush** — if `./.superpowers-lessons.jsonl` is non-empty (crash orphan), flush it before
-   anything else.
+   anything else. **v0.1 note:** since the distilled flush is gated on the §8.2 benchmark (Q5), the
+   v0.1 hook only *reports* the orphan count and points the user at `/superpowers-memory:flush`; the
+   actual flush lands with the scribe in Phase 2.
 Any transport/drift error → emit nothing fatal, exit 0 (the §6 / claude-mem discipline, now also
 justified by the verified Anthropic exit-code semantics in §14.1).
 

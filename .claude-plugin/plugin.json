@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "superpowers-memory",
+  "description": "Orchestrator-mediated Ogham memory bridge for the superpowers subagent pipeline: per-dispatch lesson recall + staged distilled flush, with subagent isolation preserved by construction.",
+  "author": { "name": "Kevin Burns" },
+  "keywords": ["ogham", "memory", "superpowers", "subagents", "recall"]
+}

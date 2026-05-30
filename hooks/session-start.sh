@@ -48,4 +48,20 @@ if [ -s "${BUFFER}" ]; then
   echo "superpowers-memory: orphaned staging buffer (${n} candidates) -- run /superpowers-memory:flush to distill."
 fi
 
+# 4. ORCHESTRATOR PROTOCOL (the integration trigger -- design §14.8a).
+# SessionStart stdout is added to the orchestrator's context (exit 0). We inject the *protocol*
+# (how to mediate the bridge), NOT lessons -- lessons stay per-dispatch recall, so this does not
+# reintroduce the blanket SessionStart context dump §8a/§12 deliberately avoids. Subagents receive
+# only the orchestrator's curated prompts (never this hook output), so the isolation invariant holds.
+cat <<EOF
+## superpowers-memory bridge -- orchestrator protocol (this session)
+The superpowers-memory bridge is active. Profile: ${PROFILE}. Binary: ${OGHAM}
+You (the orchestrator/controller) mediate Ogham. Subagents must NEVER call ogham or this bridge -- only you do (isolation invariant, design §4.1).
+When doing subagent-driven work (brainstorming/planning then dispatching implementer/reviewer subagents):
+- BEFORE each dispatch, recall task-relevant lessons (best-effort; on empty/error just proceed) and fold any results into the curated subagent prompt as "hints to verify, not gospel" with their provenance:
+    "${OGHAM}" search "<short description of the task you are about to dispatch>" --profile "${PROFILE}" --limit 5
+- AFTER ~3 tasks and at branch-finish, run the flush (v0.1 reports buffer state; the distilling scribe is gated on the §8.2 benchmark):
+    /superpowers-memory:flush
+EOF
+
 exit 0

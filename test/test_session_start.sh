@@ -42,4 +42,11 @@ echo '{"type":"decision","text":"x"}' > "${work}/.superpowers-lessons.jsonl"
 orphan="$(printf '{"cwd":"%s"}' "$work" | OGHAM_BIN="$fake" FAKE_VERSION=0.7.3 OGHAM_CALLS="${work}/c4" bash "$HOOK" 2>&1)"
 echo "$orphan" | grep -qi 'orphan' || { echo "  orphan: expected orphaned-buffer report"; rc=1; }
 
+# 5. Orchestrator protocol (integration trigger) is emitted, references the profile + the recall command,
+#    and states the subagent-isolation rule.
+proto="$(printf '{"cwd":"%s"}' "$work" | OGHAM_BIN="$fake" FAKE_VERSION=0.7.3 OGHAM_CALLS="${work}/c5" bash "$HOOK" 2>&1)"
+echo "$proto" | grep -qi 'orchestrator protocol' || { echo "  protocol: expected orchestrator protocol block"; rc=1; }
+echo "$proto" | grep -q 'search' || { echo "  protocol: expected the recall (search) command"; rc=1; }
+echo "$proto" | grep -qiE 'subagents? must never' || { echo "  protocol: expected the subagent-isolation rule"; rc=1; }
+
 exit "$rc"

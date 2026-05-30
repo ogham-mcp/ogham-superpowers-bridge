@@ -581,3 +581,31 @@ PATH assumption, plugin-model divergence, gateway-hook error spam, metadata-only
 #3 there is the mirror image of this section: the correct Claude Code integration is a *plugin with
 its own `hooks/hooks.json`* — which is exactly what this bridge is. The bridge is effectively the
 reference implementation of what an `ogham plugin claude-code` emitter should scaffold.
+
+### 14.8a Integration trigger (round 3) — orchestrator protocol injection
+§4.3 assumed "the orchestrator runs `recall` before each dispatch" but never specified *what makes it
+do so*. The gap: superpowers' `subagent-driven-development` dispatches via its own Task-tool logic and
+we cannot edit it (plugin updates wipe it — the very reason this is a companion plugin); and our skills
+are `disable-model-invocation: true`, so the model won't auto-surface them. Nothing was wiring the
+bridge into a superpowers run — the SessionStart hook fired, but recall/flush stayed dormant.
+
+**Resolution — inject the protocol, not the lessons.** The SessionStart hook (which already fires
+automatically and whose stdout is added to the orchestrator's context on exit 0 — §14.1) now emits a
+concise **orchestrator protocol**: the per-repo profile, the resolved absolute binary path, the
+isolation rule, and the exact `ogham search … --profile … --limit 5` recall command to run before each
+dispatch (plus the flush cadence). Key properties:
+
+- **Self-wiring, zero per-repo setup** — installing/enabling the plugin is sufficient; the controller
+  is told how to mediate the bridge at session start.
+- **Isolation preserved by construction** — the hook fires for the session (the orchestrator), not per
+  subagent; subagents receive only the orchestrator's curated prompts, never this hook output, so they
+  still cannot reach Ogham.
+- **Not a claude-mem-style dump** — this injects the *protocol* (the *how*), not lessons (the *what*).
+  Lessons stay per-dispatch, relevance-ranked recall (§4.3), so the §8a/§12 objection to a blanket
+  SessionStart context dump does not apply. Cost is a bounded ~8-line block per session.
+- **Optional explicit form** — `templates/CLAUDE.snippet.md` lets a repo codify the same protocol in
+  its `CLAUDE.md` instead of (or in addition to) relying on hook injection.
+
+This makes the bridge actually activate during a superpowers run; it is the prerequisite for the live
+end-to-end proving scenario (a fresh superpowers session whose orchestrator recalls before each
+subagent dispatch).

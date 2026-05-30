@@ -17,11 +17,16 @@ if [ -z "${OGHAM}" ]; then
 fi
 
 # Per-repo profile slug: git remote basename, else cwd basename; sanitized.
+# Never emits a bare "superpowers-" (which would collide across repos).
 repo_slug() {
   local url base
   url="$(git -C "${CWD}" config --get remote.origin.url 2>/dev/null || true)"
+  url="${url%/}"   # tolerate a trailing slash on the remote URL
   if [ -n "${url}" ]; then base="${url##*/}"; base="${base%.git}"; else base="$(basename "${CWD}")"; fi
   base="$(printf '%s' "${base}" | tr '[:upper:] ' '[:lower:]-' | tr -cd '[:alnum:]-')"
+  while [ "${base#-}" != "${base}" ]; do base="${base#-}"; done   # strip leading dashes
+  while [ "${base%-}" != "${base}" ]; do base="${base%-}"; done   # strip trailing dashes
+  [ -n "${base}" ] || base="unknown"
   printf 'superpowers-%s' "${base}"
 }
 PROFILE="$(repo_slug)"

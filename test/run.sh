@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
+shopt -s nullglob
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fail=0
 for t in "${DIR}"/test_*.sh; do

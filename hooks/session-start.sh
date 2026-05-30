@@ -30,11 +30,13 @@ if [ -n "${PINNED}" ] && [ -n "${INSTALLED}" ] && [ "${INSTALLED}" != "${PINNED}
   echo "superpowers-memory: ogham version drift (installed ${INSTALLED}, pinned ${PINNED}). Run scripts/install-tools.sh --upgrade."
 fi
 
-# 3. orphan-buffer report (distilled flush is gated on the §8.2 benchmark -- v0.1 only reports)
+# 3. orphan recovery: auto-commit a crash-orphaned buffer. Lines are pre-distilled (distill-at-
+#    capture), so this is a mechanical store -- safe to run at startup. Best-effort.
 BUFFER="${CWD}/.superpowers-lessons.jsonl"
 if [ -s "${BUFFER}" ]; then
   n="$(wc -l < "${BUFFER}" | tr -d ' ')"
-  echo "superpowers-memory: orphaned staging buffer (${n} candidates) -- run /superpowers-memory:flush to distill."
+  echo "superpowers-memory: recovering orphaned staging buffer (${n} candidate(s))..."
+  SUPERPOWERS_BUFFER="${BUFFER}" SUPERPOWERS_PROFILE="${PROFILE}" bash "${ROOT}/scripts/flush.sh" 2>&1 || true
 fi
 
 # 4. ORCHESTRATOR PROTOCOL (the integration trigger -- design §14.8a).
@@ -49,8 +51,10 @@ You (the orchestrator/controller) mediate Ogham. Subagents must NEVER call ogham
 When doing subagent-driven work (brainstorming/planning then dispatching implementer/reviewer subagents):
 - BEFORE each dispatch, recall task-relevant lessons (best-effort; on empty/error just proceed) and fold any results into the curated subagent prompt as "hints to verify, not gospel" with their provenance:
     "${OGHAM}" search "<short description of the task you are about to dispatch>" --profile "${PROFILE}" --limit 5
-- AFTER ~3 tasks and at branch-finish, run the flush (v0.1 reports buffer state; the distilling scribe is gated on the §8.2 benchmark):
-    /superpowers-memory:flush
+- AFTER each task's two-stage review, IF it surfaced signal (a reviewer caught something / implementer hit BLOCKED then resolved / a decision was made / a finding recurred), capture one clean <=500-token lesson:
+    "${ROOT}/scripts/capture.sh" --type <workflow-lesson|recurring-mistake|decision|tooling-fact|review-pattern> --task "<task-id>" "<the lesson>"
+- AFTER every 3 captures and at branch-finish, commit them to Ogham:
+    "${ROOT}/scripts/flush.sh"
 EOF
 
 exit 0

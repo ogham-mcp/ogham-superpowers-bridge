@@ -13,6 +13,7 @@ cat > "$fake" <<'FAKE'
 #!/usr/bin/env bash
 if [ "$1" = "profile" ] && [ "$2" = "switch" ]; then echo "$3" >> "${OGHAM_CALLS}"; exit 0; fi
 if [ "$1" = "version" ]; then printf '{"version": "%s"}\n' "${FAKE_VERSION:-0.7.3}"; exit 0; fi
+if [ "$1" = "store" ]; then echo "store $*" >> "${OGHAM_CALLS}"; exit 0; fi
 exit 0
 FAKE
 chmod +x "$fake"
@@ -38,16 +39,21 @@ drift="$(printf '{"cwd":"%s"}' "$work" | OGHAM_BIN="$fake" FAKE_VERSION=0.9.9 OG
 echo "$drift" | grep -qi 'drift' || { echo "  drift: expected drift warning, got '$drift'"; rc=1; }
 rm -rf "$fixroot"
 
-# 4. Orphan-buffer report when buffer is non-empty
-echo '{"type":"decision","text":"x"}' > "${work}/.superpowers-lessons.jsonl"
-orphan="$(printf '{"cwd":"%s"}' "$work" | OGHAM_BIN="$fake" FAKE_VERSION=0.7.3 OGHAM_CALLS="${work}/c4" bash "$HOOK" 2>&1)"
-echo "$orphan" | grep -qi 'orphan' || { echo "  orphan: expected orphaned-buffer report"; rc=1; }
+# 4. Orphan buffer is auto-flushed (committed) at SessionStart, then cleared.
+buf4="${work}/.superpowers-lessons.jsonl"
+printf '%s\n' '{"type":"decision","text":"orphan lesson","when":"t","commit":"abc","source_task":"t1","tags":["type:decision"]}' > "$buf4"
+c4="${work}/c4"; : > "$c4"
+orphan="$(printf '{"cwd":"%s"}' "$work" | OGHAM_BIN="$fake" FAKE_VERSION=0.7.3 OGHAM_CALLS="$c4" bash "$HOOK" 2>&1)"
+grep -q '^store ' "$c4" || { echo "  orphan: expected auto-flush store call"; rc=1; }
+[ -s "$buf4" ] && { echo "  orphan: expected buffer cleared after flush"; rc=1; }
 
 # 5. Orchestrator protocol (integration trigger) is emitted, references the profile + the recall command,
 #    and states the subagent-isolation rule.
 proto="$(printf '{"cwd":"%s"}' "$work" | OGHAM_BIN="$fake" FAKE_VERSION=0.7.3 OGHAM_CALLS="${work}/c5" bash "$HOOK" 2>&1)"
 echo "$proto" | grep -qi 'orchestrator protocol' || { echo "  protocol: expected orchestrator protocol block"; rc=1; }
 echo "$proto" | grep -q 'search' || { echo "  protocol: expected the recall (search) command"; rc=1; }
+echo "$proto" | grep -q 'capture.sh' || { echo "  protocol: expected the capture command"; rc=1; }
+echo "$proto" | grep -q 'flush.sh' || { echo "  protocol: expected the flush command"; rc=1; }
 echo "$proto" | grep -qiE 'subagents? must never' || { echo "  protocol: expected the subagent-isolation rule"; rc=1; }
 
 exit "$rc"

@@ -6,6 +6,7 @@ ROOT="$(cd "${DIR}/.." && pwd)"
 # shellcheck disable=SC1090
 source "${ROOT}/scripts/install-tools.sh"
 rc=0
+trap 'rm -f "${tmp:-}" "${ck:-}" "${blob:-}"' EXIT
 
 # detect_asset returns a non-empty .tar.gz for this platform
 asset="$(detect_asset)"

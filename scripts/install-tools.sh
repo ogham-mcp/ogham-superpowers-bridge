@@ -2,6 +2,8 @@
 # Hermetic installer for the pinned ogham-cli binary (design §13, §14.2 Q4).
 # Downloads the pinned release, SHA256-verifies it against checksums.txt (fail loud),
 # places it at .tools/ogham, and on macOS ad-hoc signs + de-quarantines it.
+# Note: checksums.txt is from the same release; this defends against in-transit/network
+# corruption, not a compromised upstream release (design §13.5).
 set -uo pipefail
 
 REPO="ogham-mcp/ogham-cli"
@@ -35,9 +37,11 @@ sha256_of() {
 
 # verify_checksum <file> <asset-name> <checksums.txt>: 0 if the file's sha256
 # matches the entry for <asset-name>; non-zero (and a stderr message) otherwise.
+# Uses awk exact field comparison ($2 == name) so '.' in the asset name is a
+# literal, not a regex (checksums.txt format is "<sha256>  <filename>").
 verify_checksum() {
   local file="$1" name="$2" checks="$3" expected actual
-  expected="$(grep "  ${name}\$" "$checks" 2>/dev/null | awk '{print $1}' | head -n1)"
+  expected="$(awk -v n="$name" '$2 == n {print $1; exit}' "$checks")"
   [ -n "$expected" ] || { echo "checksum for ${name} not found" >&2; return 1; }
   actual="$(sha256_of "$file")"
   if [ "$expected" != "$actual" ]; then
@@ -57,15 +61,16 @@ resolve_version() {
     case "$v" in v*) printf '%s\n' "$v" ;; *) printf 'v%s\n' "$v" ;; esac
     return 0
   fi
-  curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-    | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/'
+  curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+    | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/' \
+    || { echo "GitHub API request for latest release failed" >&2; return 1; }
 }
 
 main() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --upgrade) UPGRADE=1 ;;
-      --version) REQ_VERSION="${2:-}"; shift ;;
+      --version) [ -n "${2:-}" ] || { echo "--version requires an argument" >&2; usage; return 2; }; REQ_VERSION="$2"; shift ;;
       -h|--help) usage; return 0 ;;
       *) echo "unknown arg: $1" >&2; usage; return 2 ;;
     esac
@@ -77,7 +82,8 @@ main() {
   [ -n "${version}" ] || { echo "could not resolve version" >&2; return 1; }
   asset="$(detect_asset)" || return 1
   url="https://github.com/${REPO}/releases/download/${version}/${asset}"
-  tmp="$(mktemp -d)"; trap 'rm -rf "${tmp}"' RETURN
+  tmp="$(mktemp -d)" || { echo "mktemp failed" >&2; return 1; }
+  trap 'rm -rf "${tmp}"' RETURN
 
   echo "==> Downloading ${asset} @ ${version}"
   curl -fsSL "${url}" -o "${tmp}/${asset}" || { echo "download failed: ${url}" >&2; return 1; }

@@ -39,13 +39,15 @@ drift="$(printf '{"cwd":"%s"}' "$work" | OGHAM_BIN="$fake" FAKE_VERSION=0.9.9 OG
 echo "$drift" | grep -qi 'drift' || { echo "  drift: expected drift warning, got '$drift'"; rc=1; }
 rm -rf "$fixroot"
 
-# 4. Orphan buffer is auto-flushed (committed) at SessionStart, then cleared.
-buf4="${work}/.superpowers-lessons.jsonl"
+# 4. Orphan buffer is auto-flushed (committed) at SessionStart, then cleared. Own temp dir (hermetic).
+work4="$(mktemp -d)"
+buf4="${work4}/.superpowers-lessons.jsonl"
 printf '%s\n' '{"type":"decision","text":"orphan lesson","when":"t","commit":"abc","source_task":"t1","tags":["type:decision"]}' > "$buf4"
-c4="${work}/c4"; : > "$c4"
-orphan="$(printf '{"cwd":"%s"}' "$work" | OGHAM_BIN="$fake" FAKE_VERSION=0.7.3 OGHAM_CALLS="$c4" bash "$HOOK" 2>&1)"
+c4="${work4}/c4"; : > "$c4"
+orphan="$(printf '{"cwd":"%s"}' "$work4" | OGHAM_BIN="$fake" FAKE_VERSION=0.7.3 OGHAM_CALLS="$c4" bash "$HOOK" 2>&1)"
 grep -q '^store ' "$c4" || { echo "  orphan: expected auto-flush store call"; rc=1; }
 [ -s "$buf4" ] && { echo "  orphan: expected buffer cleared after flush"; rc=1; }
+rm -rf "$work4"
 
 # 5. Orchestrator protocol (integration trigger) is emitted, references the profile + the recall command,
 #    and states the subagent-isolation rule.

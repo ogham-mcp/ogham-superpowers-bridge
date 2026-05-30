@@ -36,7 +36,9 @@ BUFFER="${CWD}/.superpowers-lessons.jsonl"
 if [ -s "${BUFFER}" ]; then
   n="$(wc -l < "${BUFFER}" | tr -d ' ')"
   echo "superpowers-memory: recovering orphaned staging buffer (${n} candidate(s))..."
-  SUPERPOWERS_BUFFER="${BUFFER}" SUPERPOWERS_PROFILE="${PROFILE}" bash "${ROOT}/scripts/flush.sh" 2>&1 || true
+  # flush stdout (the summary line) flows into the orchestrator context; its stderr (store-failure
+  # diagnostics) stays on the hook's stderr -> debug log, not the protocol context.
+  SUPERPOWERS_BUFFER="${BUFFER}" SUPERPOWERS_PROFILE="${PROFILE}" bash "${ROOT}/scripts/flush.sh" || true
 fi
 
 # 4. ORCHESTRATOR PROTOCOL (the integration trigger -- design §14.8a).

@@ -5,8 +5,9 @@ durable lessons in [Ogham](https://github.com/ogham-mcp/ogham-cli), without brea
 context isolation. Design: `2026-05-29-superpowers-ogham-memory-bridge-design.md`.
 
 ## Status
-v0.1 scaffold. `recall` is wired to the native `ogham` CLI; capture + distilled flush are **gated on
-a positive §8.2 replay benchmark**. Private build — load with `claude --plugin-dir .`.
+v0.2. Both halves wired: `recall` (read) and the **scribe** — `capture` (distill-at-capture) + `flush`
+(commit, leaning on Ogham's native dedup). The §8.2 replay benchmark remains available to decide
+whether to *operate* the bridge at a given cadence. Private build — load with `claude --plugin-dir .`.
 
 ## Install
 

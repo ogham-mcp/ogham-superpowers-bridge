@@ -16,12 +16,12 @@ orchestrator or a scribe it dispatches.
 Every Bash step below resolves the pinned binary via the shared resolver (design §13.2):
 
 ```bash
-OGHAM="$("${CLAUDE_PLUGIN_ROOT:-$PWD}/scripts/ogham-bin.sh")" || {
-  echo "superpowers-memory: no ogham binary; recall unavailable (graceful degradation)."; exit 0; }
+OGHAM="$("${CLAUDE_PLUGIN_ROOT:-$PWD}/scripts/ogham-bin.sh")" || OGHAM=""
+[ -n "$OGHAM" ] || echo "superpowers-memory: no ogham binary; recall unavailable (graceful degradation)."
 ```
 
-If resolution fails, **degrade gracefully** — continue with empty recall, never block a dispatch
-(design §6).
+If resolution fails, **degrade gracefully**: `OGHAM` is empty, so guard every `ogham` call with
+`[ -n "$OGHAM" ]` and simply skip recall — never `exit`, never block a dispatch (design §6).
 
 ## Verb: `recall` (WIRED)
 
@@ -33,11 +33,14 @@ this skill). Use the active per-repo profile (bootstrapped by the SessionStart h
 # Relevance-ranked top-K lessons for this task. `ogham search` takes a POSITIONAL query
 # (not --query) and runs native hybrid (vector + keyword) search against the active profile.
 # JSON output by default; sub-100ms native Go path (design §9).
-"$OGHAM" search "<short description of the task you are about to dispatch>" --limit 5 2>/dev/null || true
+if [ -n "$OGHAM" ]; then
+  "$OGHAM" search "<short description of the task you are about to dispatch>" --limit 5 2>/dev/null || true
+fi
 
-# Optional: a cached wiki-preamble at a chosen resolution — this is the §4.3 `wiki_preamble_level`
-# knob (one_line / short / body). Phase 2 tunes the level by budget; not required for v0.1 recall.
-# "$OGHAM" recall topic-summary "<topic>" 2>/dev/null || true
+# Optional: a cached wiki-preamble at a chosen resolution. The design's §4.3 `wiki_preamble_level`
+# maps to the CLI `--level` flag (one_line ~30-50 tok / short ~150-300 tok / body ~1000 words;
+# default body). Phase 2 tunes the level by budget; not required for v0.1 recall.
+# "$OGHAM" recall topic-summary "<topic>" --level short 2>/dev/null || true
 ```
 
 > Note: `ogham search` needs `DATABASE_URL` + `EMBEDDING_PROVIDER` + the provider key configured. If
@@ -51,8 +54,8 @@ task shape yet"* and consider widening the subagent's exploration budget.
 
 ## Verb: `flush` (STUBBED — gated on the §8.2 benchmark)
 
-Capture and distilled flush are **not implemented in v0.1**. The interface is fixed so Phase 2 only
-fills in the body:
+Capture and the **distilled** flush are **not implemented in v0.1** — the `flush` verb only reports
+buffer state (see the stub below). The interface is fixed so Phase 2 only fills in the body:
 
 - **Capture** (future): after a task's two-stage review passes AND it surfaced signal (a reviewer
   caught something / implementer hit BLOCKED then resolved / a decision was made / a finding

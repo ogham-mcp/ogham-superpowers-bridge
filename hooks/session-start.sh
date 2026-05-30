@@ -16,20 +16,9 @@ if [ -z "${OGHAM}" ]; then
   exit 0
 fi
 
-# Per-repo profile slug: git remote basename, else cwd basename; sanitized.
-# Never emits a bare "superpowers-" (which would collide across repos).
-repo_slug() {
-  local url base
-  url="$(git -C "${CWD}" config --get remote.origin.url 2>/dev/null || true)"
-  url="${url%/}"   # tolerate a trailing slash on the remote URL
-  if [ -n "${url}" ]; then base="${url##*/}"; base="${base%.git}"; else base="$(basename "${CWD}")"; fi
-  base="$(printf '%s' "${base}" | tr '[:upper:] ' '[:lower:]-' | tr -cd '[:alnum:]-')"
-  while [ "${base#-}" != "${base}" ]; do base="${base#-}"; done   # strip leading dashes
-  while [ "${base%-}" != "${base}" ]; do base="${base%-}"; done   # strip trailing dashes
-  [ -n "${base}" ] || base="unknown"
-  printf 'superpowers-%s' "${base}"
-}
-PROFILE="$(repo_slug)"
+# Per-repo profile slug (shared helper, design §4.2).
+. "${ROOT}/scripts/repo-slug.sh"
+PROFILE="$(repo_slug "${CWD}")"
 
 # 1. eager profile bootstrap (auto-create on switch)
 "${OGHAM}" profile switch "${PROFILE}" >/dev/null 2>&1 || true

@@ -32,6 +32,7 @@ grep -qE '^superpowers-[a-z0-9]' "$out_calls" || { echo "  profile: expected sup
 fixroot="$(mktemp -d)"
 mkdir -p "${fixroot}/scripts" "${fixroot}/.tools"
 cp "${ROOT}/scripts/ogham-bin.sh" "${fixroot}/scripts/ogham-bin.sh"
+cp "${ROOT}/scripts/repo-slug.sh" "${fixroot}/scripts/repo-slug.sh"
 printf '0.7.3\n' > "${fixroot}/.tools/.version"
 drift="$(printf '{"cwd":"%s"}' "$work" | OGHAM_BIN="$fake" FAKE_VERSION=0.9.9 OGHAM_CALLS="${work}/c3" CLAUDE_PLUGIN_ROOT="$fixroot" bash "$HOOK" 2>&1)"
 echo "$drift" | grep -qi 'drift' || { echo "  drift: expected drift warning, got '$drift'"; rc=1; }

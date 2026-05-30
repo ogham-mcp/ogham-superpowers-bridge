@@ -416,3 +416,65 @@ them in OSS today. The bridge is therefore a deliberate variant of a *widely-val
 stars in ~9 months), not a from-scratch experiment, and stays in a slot claude-mem has explicitly
 reserved for its commercial roadmap. Defends against reviewer pushback ("isn't this just
 claude-mem?") and credits prior art. Full intel: Ogham memory `f9d2af21-496b-4b29-95c9-15f9e61de84f`.
+
+## 13. Installation isolation — hermetic `ogham` binary
+
+§9's CLI-first choice raises a binary-resolution problem the rest of the spec doesn't address. On
+the author's R&D machine there are **two distinct binaries both named `ogham`**:
+
+1. **`ogham-mcp` (Python)** — the editable dev install in the R&D repo's `.venv/bin/ogham`.
+   Schema-current, frequently breaking, ships the `ogham serve` MCP server.
+2. **`ogham-cli` (Go)** — the released native binary at `~/go/bin/ogham` or `/usr/local/bin/ogham`.
+   This is the load-bearing CLI from §9 (sub-100ms cold-start).
+
+If the bridge orchestrator shells out to bare `ogham` and `$PATH` happens to surface the Python
+venv copy (because the developer is in the R&D shell, or because the venv is activated), the bridge
+runs schema-current dev Ogham against the bridge profile and can write data the released CLI can't
+read back. The bridge MUST resolve to a *pinned released* `ogham-cli` Go binary, not whatever
+`command -v ogham` happens to return.
+
+### 13.1 Hermetic layout
+
+```
+ogham-superpower-bridge/
+  .tools/
+    ogham           # pinned ogham-cli Go binary (e.g. v0.7.0), gitignored
+    .version        # "0.7.0" — checked at SessionStart
+  scripts/
+    install-tools.sh  # fetches pinned binary from ogham-cli GitHub releases
+  .gitignore        # ignores .tools/ogham
+```
+
+### 13.2 Resolution order (bridge skill internals)
+
+```bash
+OGHAM_BIN="${OGHAM_BIN:-${CLAUDE_PLUGIN_ROOT:-$PWD}/.tools/ogham}"
+[ -x "$OGHAM_BIN" ] || OGHAM_BIN="$(command -v ogham)" || die "no ogham binary"
+"$OGHAM_BIN" recall ...
+```
+
+- Default path: the pinned `.tools/ogham`, fully hermetic.
+- Escape hatch: `OGHAM_BIN=$(which ogham) ogham-superpowers-recall ...` for one-off dev experiments.
+- Last-resort PATH fallback only if neither is set — fails loud if nothing is installed.
+
+### 13.3 SessionStart binary check
+
+The SessionStart hook (already needed for orphan-flush — §4.2 component 4) also asserts the binary
+matches `.tools/.version` and offers `scripts/install-tools.sh --upgrade` if drift is detected.
+Mirrors claude-mem's Setup hook that ensures Bun + uv are present before its worker starts (§12
+prior art) — same install-discipline pattern, different runtime.
+
+### 13.4 Upgrade contract
+
+When `ogham-cli` ships a new release, the bridge does **not** auto-upgrade. The developer runs
+`./scripts/install-tools.sh --upgrade`, bumps `.tools/.version`, runs the replay benchmark (§8.2) to
+catch any regression, then commits. For a future public plugin, the Setup hook auto-fetches at
+install time based on `plugin.json`'s declared version — pinned at the manifest, not at HEAD of the
+ogham-cli repo.
+
+### 13.5 Why not Homebrew / system-wide install for the bridge
+
+A `brew install ogham-cli` global install works for ad-hoc dev use, but breaks the bridge's
+reproducibility contract: `brew upgrade` can silently move the binary under a running orchestration,
+and CI environments don't have brew. The hermetic `.tools/` layout is the same pattern Node uses for
+`node_modules/` and Python uses for `.venv/` — applied to a binary dependency.

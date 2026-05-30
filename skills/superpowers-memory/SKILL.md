@@ -52,28 +52,30 @@ to roughly 1500 tokens; prefer short preambles, and when many lessons return, su
 paste. If recall returns nothing relevant, inject a single line: *"No proven lesson exists for this
 task shape yet"* and consider widening the subagent's exploration budget.
 
-## Verb: `flush` (STUBBED — gated on the §8.2 benchmark)
+## Verbs: `capture` + `flush` (WIRED)
 
-Capture and the **distilled** flush are **not implemented in v0.1** — the `flush` verb only reports
-buffer state (see the stub below). The interface is fixed so Phase 2 only fills in the body:
+Both run as Bash scripts you (the orchestrator) invoke — never via the Skill tool (the skills are
+`disable-model-invocation`). Resolve the plugin root once: it is `${CLAUDE_PLUGIN_ROOT}`.
 
-- **Capture** (future): after a task's two-stage review passes AND it surfaced signal (a reviewer
-  caught something / implementer hit BLOCKED then resolved / a decision was made / a finding
-  repeated), append one typed candidate to `./.superpowers-lessons.jsonl` per `buffer-schema.md`.
-  Clean tasks write nothing.
-- **Flush** (future, every N=3 candidates + at branch-finish): a scribe reads the buffer, dedupes/
-  merges against existing repo memories, distills survivors (<=500 tokens each), and writes them with
-  `source="superpowers-scribe"`, tags, and TTL, then clears the buffer.
-
-Until the benchmark proves positive, `flush` only reports the buffer state:
+**Capture (distill-at-capture).** After a task's two-stage review, **only if it surfaced signal** — a
+reviewer caught something, the implementer hit BLOCKED then resolved it, a decision was made, or a
+finding recurred — write one clean ≤500-token lesson:
 
 ```bash
-BUFFER="${PWD}/.superpowers-lessons.jsonl"
-if [ -s "$BUFFER" ]; then
-  echo "superpowers-memory: $(wc -l < "$BUFFER" | tr -d ' ') candidate(s) staged. Distilled flush is gated on the §8.2 replay benchmark (not yet enabled)."
-else
-  echo "superpowers-memory: staging buffer empty."
-fi
+"${CLAUDE_PLUGIN_ROOT}/scripts/capture.sh" \
+  --type <workflow-lesson|recurring-mistake|decision|tooling-fact|review-pattern> \
+  --task "<task-id>" "<the distilled lesson>"
 ```
+Clean tasks write nothing. `capture.sh` validates the type against the §5 taxonomy, stamps provenance
+(`when`, `commit`, `source_task`), and appends one JSONL line to `./.superpowers-lessons.jsonl`.
 
-See `buffer-schema.md` for the candidate format and the §5 taxonomy that bounds what may ever be stored.
+**Flush (commit).** After every 3 captures and at branch-finish, commit the buffer to Ogham:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/flush.sh"
+```
+`flush.sh` stores each staged lesson with `--source superpowers-scribe` into `superpowers-<repo-slug>`,
+relying on Ogham's native surprise/auto-link to dedup. Lines that fail to store are retained for the
+next flush (nothing is lost); successes are cleared. Best-effort — never blocks.
+
+See `buffer-schema.md` for the candidate format and the §5 taxonomy.

@@ -1,8 +1,8 @@
 # Staging buffer: `.superpowers-lessons.jsonl`
 
 Crash-safe local capture in the worktree (design §4.2). Gitignored (see `.gitignore` at the repo root). One JSON object per line.
-Distilled flush into Ogham is **gated on the §8.2 replay benchmark** — until then this file only
-accumulates candidates; the SessionStart hook reports orphans.
+Lessons are written here by `scripts/capture.sh` (distill-at-capture) and committed to Ogham by
+`scripts/flush.sh` (every 3 captures + branch-finish). The SessionStart hook auto-commits any orphan.
 
 Each line:
 ```json

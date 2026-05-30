@@ -1,0 +1,6 @@
+# Pinned ogham binary — hermetic, never committed (design §13.1). Provenance files stay tracked.
+.tools/ogham
+# Crash-safe local staging buffer (design §4.2) — never committed.
+.superpowers-lessons.jsonl
+# macOS noise
+.DS_Store

@@ -38,6 +38,8 @@ rm -f "$ck" "$blob"
 [ "$(classify_ogham 0.14.3)" = "mcp" ]    || { echo "  classify: 0.14.3 should be mcp"; rc=1; }
 [ "$(classify_ogham 1.0.0)" = "mcp" ]     || { echo "  classify: 1.0.0 should be mcp"; rc=1; }
 [ "$(classify_ogham '')" = "unknown" ]    || { echo "  classify: empty should be unknown"; rc=1; }
+[ "$(classify_ogham 0abc)" = "unknown" ]  || { echo "  classify: non-numeric major should be unknown"; rc=1; }
+[ "$(classify_ogham v0.7.3)" = "unknown" ] || { echo "  classify: v-prefixed should be unknown"; rc=1; }
 
 # --use-system integration: adopt a Go-CLI fake (subprocess; isolated TOOLS_DIR; never touch real .tools)
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -71,6 +73,7 @@ fakenov="${td}/ogham-nov"; printf '#!/usr/bin/env bash\nexit 1\n' > "$fakenov"; 
 td3="$(mktemp -d)"
 if SUPERPOWERS_TOOLS_DIR="${td3}/tools" OGHAM_BIN="$fakenov" bash "$INSTALL" --use-system >/dev/null 2>&1; then
   echo "  use-system nover: expected rejection (no version JSON)"; rc=1; fi
+[ -e "${td3}/tools/ogham" ] && { echo "  use-system nover: must NOT create a symlink on reject"; rc=1; }
 
 rm -rf "$td" "$td2" "$td3"
 

@@ -63,9 +63,10 @@ ogham_cli_version() {
 classify_ogham() {
   local ver="$1" major minor
   [ -n "$ver" ] || { echo "unknown"; return 0; }
-  major="${ver%%.*}"; major="${major%%[!0-9]*}"
+  major="${ver%%.*}"
+  # Reject a non-numeric major outright (e.g. "v0.7" or "0abc") -> unknown, per the guard contract.
+  case "$major" in ''|*[!0-9]*) echo "unknown"; return 0 ;; esac
   minor="${ver#*.}"; minor="${minor%%.*}"; minor="${minor%%[!0-9]*}"; [ -n "$minor" ] || minor=0
-  [ -n "$major" ] || { echo "unknown"; return 0; }
   if [ "$major" -gt 0 ] || { [ "$major" -eq 0 ] && [ "$minor" -ge 14 ]; }; then
     echo "mcp"
   else

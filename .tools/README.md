@@ -1,0 +1,643 @@
+# ogham-cli
+
+A single Go binary that gives AI agents persistent, searchable memory -- even on locked-down enterprise laptops where third-party MCP servers are blocked.
+
+> **v0.7.0 GA** (2026-04-24). Hybrid MCP proxy, 24 native tools absorbed (CRUD + typed-store + stats + graph walk), sentinel-based active profile, 18-language word-list registry with scoring + date parsing wired through, recurrence detection (EN/DE), narrower person-name regex (parity 93.8% -> 97.9%), `--legacy` renamed to `--sidecar` (backward-compat alias retained), new `ogham capabilities` subcommand, coverage retrofit maintained (extraction 93% / sidecar 87.6% / native 78.4% / mcp 67.7%). Cross-platform binaries on the [Releases page](https://github.com/ogham-mcp/ogham-cli/releases/latest) -- macOS (Apple Silicon + Intel), Linux (amd64 + arm64), Windows (amd64).
+
+## Architecture
+
+Ogham's memory server is a Python MCP -- that's where retrieval quality lives (strided retrieval, multi-hop intent patterns, MMR re-ranking, graph augmentation, query reformulation). The Go CLI (`ogham`) is an enterprise-friendly access door: a single static binary, zero runtime deps, suitable for environments where Python + pip aren't viable.
+
+Use `--sidecar` when you need the full retrieval pipeline; the native path is faster but applies a subset of the retrieval machinery:
+
+```bash
+ogham search "deployment incidents"              # native Go path (fast, subset)
+ogham search "deployment incidents" --sidecar    # routes through Python MCP (full pipeline)
+```
+
+Run `ogham capabilities --json` for the authoritative matrix of which MCP tools are native vs which require the sidecar. The human-readable `ogham capabilities` is grouped for reading.
+
+`--legacy` is a hidden backward-compat alias for `--sidecar`. It still works but emits a deprecation warning; it will be removed in v0.8.
+
+## Who this is for
+
+### 1. Self-hosters
+
+You want persistent memory across AI clients (Claude Code, Cursor, Windsurf, Codex, Antigravity) and you want to run the whole stack yourself. No cloud, no SaaS vendor. The Go binary is your command-line entry point; behind it sits the Python Ogham MCP server (`ogham-mcp`) doing embeddings, hybrid search, entity extraction, the dashboard, and the knowledge graph.
+
+### 2. Locked-down enterprise environments
+
+Your employer's Claude Code deployment blocks third-party MCP servers -- only IT-approved ones show up. Installing `ogham-mcp` as an MCP registration silently fails. This pattern has become common across regulated industries (enterprise managed Claude Code, VPN-scoped policies, compliance-driven allowlists).
+
+The Go binary bypasses the lockdown because it is *not* an MCP registration. It is a plain executable that Claude Code invokes via Bash. Enterprise policy does not block arbitrary CLI binaries. Inside, the Go binary spawns Python as a child process -- Claude Code never sees the MCP server, so the lockdown has nothing to block.
+
+## Architecture
+
+```
+  ┌──────────────────────────────────────────────┐
+  │  Claude Code / Cursor / Windsurf / Codex     │
+  └───────────────┬──────────────────────────────┘
+                  │  Bash call -- JSON by default
+                  │  (see CLAUDE.md template below)
+                  ▼
+  ┌──────────────────────────────────────────────┐
+  │  ogham (Go binary, ~8 MB, zero runtime deps) │
+  │    cobra subcommands                         │
+  │    MCP client (modelcontextprotocol/go-sdk)  │
+  │    dotenv auto-loader (project .env etc.)    │
+  └───────────────┬──────────────────────────────┘
+                  │  stdio (MCP JSON-RPC) in `ogham serve`
+                  │
+                  │  Router: tool name -> handler
+                  │    native["store_memory"]    -> Go
+                  │    native["hybrid_search"]   -> Go
+                  │    native["list_recent"]     -> Go
+                  │    native["health_check"]    -> Go
+                  │    proxy["delete_memory"]    -> Sidecar
+                  │    proxy["compress_old_..."] -> Sidecar
+                  │    proxy["explore_knowledge"]-> Sidecar
+                  │    ...                         Sidecar
+                  ▼
+  ┌──────────────────────────────────────────────┐
+  │  ogham-mcp (Python, spawned as subprocess,   │
+  │   eager at startup, reconnect-supervised)    │
+  │    FastMCP 3.x, compression, graph walk,     │
+  │    Prefab dashboard, typed-store wrappers    │
+  └───────────────┬──────────────────────────────┘
+                  │
+                  ▼
+      PostgreSQL + pgvector (Supabase / Neon / self-hosted)
+```
+
+Three runtime paths, one codebase:
+
+| Path | How invoked | Default? | Use case |
+|---|---|---|---|
+| **Native Go** | default for every subcommand in v0.5+ | yes | Go talks to Postgres / Supabase / Gemini (+ Ollama / OpenAI / Voyage / Mistral) directly. ~10× faster than sidecar for read paths; store latency drops ~4× (2s → 500ms) compared to sidecar-backed v0.4. |
+| **Hybrid proxy (`ogham serve`)** | default in v0.6+ | yes | Native tools + Python sidecar tools merged into one MCP manifest. Native handlers win on name collision. If the sidecar fails to spawn, the server logs a warning and keeps serving the native subset. `--no-sidecar` forces native-only. |
+| **Sidecar (subcommands)** | `--sidecar` (or `--python`; `--legacy` is a deprecated alias) | opt-in | Routes a single subcommand through the Python MCP server for the full retrieval pipeline (intent detection, strided retrieval, MMR, graph augmentation, query reformulation) and tool-layer enrichment the sidecar still owns (compression). |
+| **Gateway** | `go build -tags gateway .` | no | HTTPS against managed `api.ogham-mcp.dev`. Hidden in default build. |
+
+The v0.5 native path absorbs: `extraction` (entities, dates, importance), five embedders (Gemini / Ollama / OpenAI / Voyage / Mistral), hybrid search, and the full store pipeline (extraction → parallel embed + search → surprise → auto-link candidates → DB write). A shared SQLite embedding cache at `$HOME/.cache/ogham/embeddings.db` is wire-compatible with the Python sidecar: switching between the two warms the cache instead of paying cold start.
+
+The v0.6 hybrid proxy removes the "tool not found" problem for Python-only features: `ogham serve` exposes every sidecar tool via a generic proxy handler (see `internal/mcp/proxy_handler.go`), so an MCP client wired to the Python server can drop in the Go binary without reconfiguring any tool calls. Reconnect-on-death supervisor recovers automatically if the Python subprocess exits mid-session (one reconnect attempt with a 1s backoff + 15s spawn timeout). Absorption path is incremental: once a tool gets a native Go implementation and lands in `RegisterNativeTools`, the proxy skip-list grows by one automatically -- no router changes needed.
+
+Remaining sidecar-only features: dashboard (stays Python forever -- absorbing it would require rebuilding the frontend in Node), `export` / `import` tools, compression (`compress_old_memories` needs an LLM chat client Go doesn't have yet).
+
+## Install
+
+Pick the row that matches what you already have on the machine. macOS users with Go installed should prefer `go install` -- it builds the binary locally so Gatekeeper has nothing to flag, and you skip the `xattr` / `codesign` dance entirely.
+
+| You have… | Run | macOS quarantine step? |
+| --- | --- | --- |
+| Go ≥ 1.26 | `go install github.com/ogham-mcp/ogham-cli@latest` | **No** -- recommended for macOS |
+| `curl` + bash | `curl -sSL https://raw.githubusercontent.com/ogham-mcp/ogham-cli/main/install.sh \| bash` | No -- the script handles it |
+| `brew` (when tap publishes) | `brew install ogham-mcp/tap/ogham-cli` | No -- Homebrew clears it |
+| A release tarball, by hand | Extract, move onto `$PATH`, then on macOS run `xattr -d` + `codesign -` (see below) | Yes -- manual step |
+
+`ogham` is a single static binary (~8 MB after `-s -w`). Pick whichever directory in your `$PATH` you prefer:
+
+| Location | Scope | sudo? | When to choose |
+| --- | --- | --- | --- |
+| `~/.local/bin` | user-only | no | XDG-style; lowest friction. Add to `PATH` if not already there. |
+| `~/bin` | user-only | no | Classic per-user path. macOS adds it to `PATH` automatically when present. |
+| `/usr/local/bin` | system-wide | **yes** | Shared with other CLI tools; survives user-profile resets. |
+| `/opt/homebrew/bin` (Apple Silicon) `/usr/local/bin` (Intel) | system-wide | depends | If you want to drop alongside Homebrew tools. |
+
+After install, confirm:
+
+```bash
+which ogham        # → /Users/you/.local/bin/ogham (or wherever)
+ogham --version    # → ogham vX.Y.Z (...)
+```
+
+If `which` finds nothing, the directory isn't on `$PATH`. Add to `~/.zshrc` (zsh) or `~/.bashrc` (bash):
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+### `go install` (recommended on macOS)
+
+Requires Go ≥ 1.26.
+
+```bash
+go install github.com/ogham-mcp/ogham-cli@latest
+# binary lands in $(go env GOBIN) or $(go env GOPATH)/bin
+```
+
+Add `$(go env GOPATH)/bin` to your `PATH` if it isn't already:
+
+```bash
+echo 'export PATH="$(go env GOPATH)/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+ogham --version
+```
+
+**No `xattr` / `codesign` step is needed.** The binary is built on your machine, so it never receives the `com.apple.quarantine` extended attribute that browsers and `curl` set on downloaded files.
+
+**`ogham: command not found` after `go install`?** Most common cause: the install succeeded, but `$GOPATH/bin` isn't on your `$PATH`. Three quick checks:
+
+```bash
+# 1. Where does Go put binaries on your machine?
+go env GOBIN GOPATH
+# If GOBIN is set, the binary is in $GOBIN.
+# If GOBIN is empty, it's in $(go env GOPATH)/bin (typically ~/go/bin).
+
+# 2. Does the binary actually exist?
+ls -l "$(go env GOPATH)/bin/ogham"
+
+# 3. Is that directory on your PATH?
+echo "$PATH" | tr ':' '\n' | grep -E '(/go/bin|GOBIN)'
+```
+
+Other failure modes:
+
+- **Corporate proxy** blocking `proxy.golang.org` → `GOPROXY=direct go install github.com/ogham-mcp/ogham-cli@latest` (slower, bypasses the module proxy).
+- **`~/go` owned by root** from a previous `sudo go install` → `sudo chown -R "$USER" ~/go`.
+
+### `install.sh` one-liner (curl + bash)
+
+Detects platform, downloads the right asset, ad-hoc signs on macOS, and installs to `~/.local/bin`:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/ogham-mcp/ogham-cli/main/install.sh | bash
+```
+
+Pin a specific release or change the install dir:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/ogham-mcp/ogham-cli/main/install.sh | bash -s -- --version v0.7.1
+INSTALL_DIR=/usr/local/bin curl -sSL https://raw.githubusercontent.com/ogham-mcp/ogham-cli/main/install.sh | bash
+```
+
+### Pre-built binaries by hand
+
+Download the platform tarball from the [latest release](https://github.com/ogham-mcp/ogham-cli/releases/latest) and verify the SHA256 against `checksums.txt`:
+
+```bash
+# macOS (Apple Silicon)
+curl -L https://github.com/ogham-mcp/ogham-cli/releases/latest/download/ogham-cli-darwin-arm64.tar.gz | tar -xz
+# macOS (Intel)
+curl -L https://github.com/ogham-mcp/ogham-cli/releases/latest/download/ogham-cli-darwin-amd64.tar.gz | tar -xz
+# Linux (amd64)
+curl -L https://github.com/ogham-mcp/ogham-cli/releases/latest/download/ogham-cli-linux-amd64.tar.gz | tar -xz
+# Linux (arm64)
+curl -L https://github.com/ogham-mcp/ogham-cli/releases/latest/download/ogham-cli-linux-arm64.tar.gz | tar -xz
+# Windows (amd64) -- fetch the .zip from the Releases page and extract
+
+mv ogham ~/.local/bin/        # or wherever (see table above)
+chmod +x ~/.local/bin/ogham
+```
+
+### macOS: clear the download quarantine
+
+Browsers and `curl` set the `com.apple.quarantine` extended attribute on downloaded files. If you try to run the binary without clearing it, macOS shows: *"ogham" cannot be opened because the developer cannot be verified.* (Skip this section if you used `go install` -- locally built binaries don't get the xattr.)
+
+**Recommended (no sudo, user-local install):**
+
+```bash
+# 1. Strip the quarantine xattr
+xattr -d com.apple.quarantine ~/.local/bin/ogham
+
+# 2. Ad-hoc sign so future Gatekeeper checks pass
+codesign --force --sign - ~/.local/bin/ogham
+
+# 3. Verify
+ogham --version
+```
+
+**System-wide install (`/usr/local/bin`, requires sudo):**
+
+```bash
+sudo xattr -d com.apple.quarantine /usr/local/bin/ogham
+sudo codesign --force --sign - /usr/local/bin/ogham
+ogham --version
+```
+
+If `xattr -d` reports *No such xattr*, the file wasn't quarantined -- skip to the `codesign` step (or run `ogham --version` directly; it may already work).
+
+**Why this works:** stripping `com.apple.quarantine` opts you out of the first-launch Gatekeeper review for that file. The ad-hoc `codesign -` (the dash means "sign with no developer identity") gives the binary a local signature so subsequent integrity checks pass. This is appropriate for a binary you've SHA256-verified yourself. Once we publish notarized releases, the manual `codesign` step won't be needed.
+
+### Windows: Mark of the Web
+
+Edge / Chrome / curl mark downloaded `.exe`s with a Mark-of-the-Web zone identifier. SmartScreen prompts the first time you run them.
+
+**GUI:** Right-click `ogham.exe` → **Properties** → tick **Unblock** → **OK**.
+
+**PowerShell (equivalent, scriptable):**
+
+```powershell
+Unblock-File -Path .\ogham.exe
+.\ogham.exe --version
+```
+
+**Linux:** no quarantine system; `chmod +x` and run.
+
+### Build from source
+
+```bash
+git clone https://github.com/ogham-mcp/ogham-cli.git
+cd ogham-cli
+go build -o ~/.local/bin/ogham .
+```
+
+Requires Go 1.26+. The binary is ~8 MB after `-s -w`.
+
+## Quick start
+
+Prerequisites on the host:
+- `uv` (Astral uv -- `curl -LsSf https://astral.sh/uv/install.sh | sh`)
+- Python 3.13 available to `uv` (install with `uv python install 3.13` if missing)
+- A Postgres database reachable from the host (Supabase, Neon, or self-hosted)
+
+One-time config -- drop a `.env` in your working directory or `~/.ogham/config.env`:
+
+```bash
+# Database -- pick one backend
+DATABASE_BACKEND=supabase
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=sb_secret_...    # NOT the anon / publishable key -- see below
+
+# Or for vanilla Postgres / Neon
+# DATABASE_BACKEND=postgres
+# DATABASE_URL=postgresql://user:pass@host:5432/ogham
+
+# Embedding provider
+EMBEDDING_PROVIDER=gemini
+GEMINI_API_KEY=...
+EMBEDDING_DIM=512
+
+# Tell the Go binary which Python extras to install into the sidecar
+OGHAM_SIDECAR_EXTRAS=postgres,gemini
+
+# Default memory profile
+DEFAULT_PROFILE=work
+```
+
+Then:
+
+```bash
+ogham health              # JSON status report
+ogham list --limit 5      # recent memories (JSON by default)
+ogham search "query"      # hybrid vector + keyword search
+ogham store "content" --tags type:decision,project:foo
+```
+
+**Output + backend are chosen for you.** JSON is the default (scripts and LLMs parse it cleanly). Native Go is the default backend (direct Postgres / Supabase / Gemini, ~10× faster than spinning up a Python process per call).
+
+Add `--text` for human-readable output, `--sidecar` (or `--python`) to route through the Python MCP sidecar:
+
+```bash
+ogham list --text --limit 5              # numbered, readable
+ogham search "query" --sidecar --text    # full retrieval pipeline, human output
+```
+
+## Claude Code integration (the enterprise-lockdown unblock)
+
+On machines where Claude Code blocks MCP registration, add this to your project's `CLAUDE.md`:
+
+```markdown
+## Ogham shared memory
+
+This project uses Ogham for persistent shared memory across sessions.
+Use Bash to invoke the `ogham` CLI directly -- do not attempt MCP registration.
+
+Before starting work, retrieve context:
+    ogham search "what you're about to work on"
+
+Save decisions and learnings:
+    ogham store "what you learned" --tags type:decision,project:$(basename $(pwd))
+
+List recent work:
+    ogham list --limit 20
+
+All commands return JSON by default -- ideal for parsing in Bash pipelines.
+Add --text if you ever need to read output with human eyes.
+```
+
+Claude Code will now call `ogham` via its Bash tool. Enterprise MCP filtering is bypassed entirely because nothing ever registers as an MCP server from Claude Code's perspective.
+
+## Configuration
+
+### Where configuration lives
+
+1. **Project-local `.env`** (highest priority) -- override for a single repo
+2. **`~/.ogham/config.env`** (global fallback) -- works from any cwd
+3. **`~/.ogham/config.toml`** -- Go-native config; overrides both env files
+
+The Go binary auto-loads all three and passes the resolved environment to the Python sidecar. Python does not need to know about TOML; the Go side translates.
+
+### Common env vars
+
+| Variable | Purpose |
+|---|---|
+| `DATABASE_BACKEND` | `supabase` or `postgres` |
+| `SUPABASE_URL`, `SUPABASE_KEY` | Supabase backend credentials. **Use the secret key (`sb_secret_…`) from Supabase Dashboard → Settings → API → Project API keys** -- not the anon or publishable key. The anon key is gated by RLS and will return HTTP 401 on `hybrid_search_memories` and the memories table. `ogham config show` flags an anon key with `(anon — RPCs will 401)` so the misconfiguration is caught before the first request. |
+| `DATABASE_URL` | Postgres backend connection string |
+| `EMBEDDING_PROVIDER` | `ollama` / `openai` / `voyage` / `gemini` / `mistral` |
+| `GEMINI_API_KEY` / `OPENAI_API_KEY` / `VOYAGE_API_KEY` / `MISTRAL_API_KEY` | Provider-specific keys |
+| `EMBEDDING_DIM` | Embedding dimension (default 512) |
+| `DEFAULT_PROFILE` | Memory profile used when no `--profile` flag given |
+| `OGHAM_SIDECAR_EXTRAS` | Comma-separated Python extras (e.g. `postgres,gemini`) |
+| `OGHAM_SIDECAR_CMD` | Full override for how the Python sidecar is launched |
+
+### Subprocess command resolution
+
+Precedence, highest to lowest:
+
+1. `OGHAM_SIDECAR_CMD` -- full command override (whitespace-split)
+2. `OGHAM_SIDECAR_EXTRAS` -- appended to the ephemeral `uv tool run --from ogham-mcp[...]`
+3. Default: `uv tool run --python 3.13 --from ogham-mcp ogham serve`
+
+If you have ogham-mcp installed as a permanent uv tool with the right extras:
+
+```bash
+uv tool install --refresh "ogham-mcp[postgres,gemini]"
+export OGHAM_SIDECAR_CMD="ogham serve"
+```
+
+Then every `ogham` command starts in milliseconds instead of waiting for the ephemeral install.
+
+## Commands
+
+Every command outputs JSON by default and runs natively where possible. Pass `--text` for human output, `--sidecar` (or `--python`) to route through the Python sidecar. Run `ogham capabilities` for the authoritative matrix of native-vs-sidecar tools.
+
+| Command | Default path | Purpose |
+|---|---|---|
+| `ogham health` | native | Parallel errgroup probes (DB + embedder). Adds `--live-embedder` to burn a real provider token. |
+| `ogham list [--limit N] [--profile P] [--source S] [--tags a,b]` | native | Recent memories |
+| `ogham search <query> [--limit N] [--tags a,b] [--profile P]` | native | Hybrid search (vector + keyword + RRF). Native uses Gemini via REST + `hybrid_search_memories` RPC. Add `--sidecar` for the full Python retrieval pipeline (intent detection, strided retrieval, query reformulation, MMR, spreading activation). |
+| `ogham store [content] [--tags a,b] [--source s] [--profile P] [--dry-run]` | native | Store a memory. Content can be a positional arg or piped on stdin: `git diff \| ogham store --source git-diff`. Native orchestrator runs extraction, parallel embed + search, surprise score, and auto-link candidate selection before writing. `--dry-run` skips the DB write and prints the preview. `--sidecar` routes through the Python MCP for contradiction / supersedes / compression passes. |
+| `ogham capabilities [--json]` | offline | Print the native-vs-sidecar tool matrix (which MCP tools resolve in Go, which require `--sidecar`, which augmentations are sidecar-only). |
+| `ogham export [--profile P] [--format json\|markdown] [-o file]` | sidecar | Export a profile's memories. Stdout by default; write to file with `-o`. |
+| `ogham import <file.json> [--profile P] [--dedup 0.8]` | sidecar | Bulk-import from an `ogham export` JSON file (or `-` for stdin). |
+| `ogham profile current / switch / list / ttl` | native | Profile ops. `switch` persists to TOML + env. |
+| `ogham stats` | native | Headline counts, top sources, top tags |
+| `ogham delete <id>` | native | Delete a memory |
+| `ogham cleanup [--dry-run] [--yes]` | native | Remove expired memories (`cleanup_expired_memories` RPC) |
+| `ogham decay [--dry-run] [--batch-size N]` | native | Apply Hebbian decay (`apply_hebbian_decay` RPC) |
+| `ogham audit [--operation X] [--limit N]` | native | Read the audit trail |
+| `ogham config show` | native | Dump resolved config with secrets masked |
+| `ogham init` | interactive | huh TUI wizard; writes TOML + env |
+| `ogham dashboard [--port N]` | Python subprocess | Starts the Prefab dashboard (Python stays Python for the frontend) |
+| `ogham serve` | MCP server | Run as an MCP stdio server. Native Go tools by default (store_memory, hybrid_search, list_recent, health_check) + Python sidecar auto-proxied for everything else (delete_memory, compression, graph, typed-store, etc.). Native handlers win on name collision. Pass `--no-sidecar` for strict native-only. |
+| `ogham hooks install / run <event>` | sidecar | Wire into Claude Code hooks |
+| `ogham plugin openclaw` / `agent-zero` | offline | Emit host plugin manifest |
+| `ogham auth login --api-key KEY` | gateway only | Gateway API-key management (build-tag gated) |
+| `ogham version` | offline | Print version + commit + build date + Go version + platform |
+| `ogham completion bash\|zsh\|fish\|powershell` | offline | Emit shell completion script (cobra built-in) |
+
+### Global flags (persistent on every subcommand)
+
+| Flag | Effect |
+|---|---|
+| `--text` | Human-readable output instead of JSON |
+| `--sidecar`, `--python` | Route through the Python MCP sidecar for the full retrieval pipeline (intent detection, strided retrieval, MMR, graph augmentation) |
+| `--legacy` | Deprecated alias for `--sidecar`; still works (hidden from --help) but emits a warning; removed in v0.8 |
+| `-q`, `--quiet` | Suppress stderr informational notices (e.g. the sidecar fallback message on `store`) |
+
+Deprecated silent no-ops (kept so pre-rc4 scripts don't break): `--json`, `--native`. Both are now the default; the flags do nothing.
+
+### Shell completion
+
+Cobra exposes completion for bash / zsh / fish / powershell. One-time setup:
+
+```bash
+# bash (add to ~/.bashrc)
+source <(ogham completion bash)
+
+# zsh (add to ~/.zshrc)
+source <(ogham completion zsh)
+
+# fish
+ogham completion fish | source
+
+# powershell (add to $PROFILE)
+ogham completion powershell | Out-String | Invoke-Expression
+```
+
+Then `ogham <TAB>` completes subcommands, `ogham --<TAB>` completes flags, etc.
+
+`ogham` alone (no subcommand) starts `ogham serve`. Useful if you prefer configuring a compatible client with just `"command": "ogham"`.
+
+## Python CLI ↔ Go CLI parity
+
+The Go CLI aims at parity with the Python `ogham` CLI for day-to-day use. Dev-only tools stay on the Python side.
+
+| Python | Go | Notes |
+|---|---|---|
+| `serve`, `init`, `health`, `dashboard`, `store`, `search` | same | core parity |
+| `list-memories` | **`list`** | renamed for brevity; Go adds `--source` filter |
+| `stats` | `stats` | native aggregation |
+| `profiles` | `profile list` | Go splits into subcommand group (`profile current/switch/list/ttl`) |
+| `use` | `profile switch` | Go persists to TOML+env |
+| `delete`, `cleanup`, `decay`, `audit`, `config` | `delete`, `cleanup`, `decay`, `audit`, `config show` | native-only; mirror the Python SQL RPCs |
+| `hooks install/recall/inscribe` | `hooks install` / `hooks run <event>` | same underlying Python handlers |
+| `export`, `import` | — | still Python-only -- pair with native `store` when entity extractor is ported |
+| `openapi` | — | dev-only; stays Python |
+
+Go-only: `auth`, `plugin openclaw/agent-zero`, `import-agent-zero`, `profile ttl`, `version`.
+
+See `docs/plans/2026-04-16-go-cli-enterprise.md` in the R&D repo for the live feature-port tracker with per-tool status (Python MCP side and CLI side).
+
+## Operators: database connection paths
+
+The native store path writes through one of three routes, and each has a
+different pooler story. The code is route-agnostic -- this note is for
+operators who need to make the right choice in `DATABASE_URL` /
+`SUPABASE_URL` and for anyone running schema migrations.
+
+1. **Direct Postgres (`DATABASE_BACKEND=postgres`).** `writeMemoryPostgres`
+   uses `cfg.Database.URL` as-is via pgx. Works with either the direct
+   endpoint or the Supavisor pooler for plain `INSERT` / `UPDATE` /
+   `DELETE`. Full feature set if you point at the direct endpoint.
+2. **Supabase PostgREST (`DATABASE_BACKEND=supabase`).** `writeMemorySupabase`
+   goes through HTTPS `/rest/v1/memories` with a pgvector text literal for
+   the `embedding` column. Pooler vs direct is irrelevant here -- the
+   request travels over HTTPS to PostgREST, which fans out to Postgres
+   internally.
+3. **Supavisor pooler** (port 6543, `-pooler` hostname). Only a concern
+   if you're running DDL yourself. `ALTER TABLE` and other DDL silently
+   fail on the pooler. Switch to the direct endpoint (strip `-pooler`
+   from the host), run the migration, then `DISCARD ALL;` on the pooler
+   afterwards to refresh its plan cache.
+
+Regional caveat: Supabase's AP free tier has **no IPv4 direct host** --
+the Supavisor pooler is the only route into that region's databases.
+Modern Supavisor handles DDL there, so the "pooler can't do DDL" rule
+does not apply in that specific case.
+
+The v0.5 store path is pure DML, so the pooler is fine for every
+day-to-day `ogham store` call regardless of which of the three routes
+you configure.
+
+## Tips for enterprise / locked-down machines
+
+### First-run playbook on a locked-down Claude Code
+
+The whole reason this binary exists. Follow in order:
+
+1. **Install the binary.** `chmod +x` and drop into `/usr/local/bin` (or any PATH dir). No Python, no runtime, no registration.
+2. **Run `ogham init`.** The wizard collects your Supabase / Postgres + embedding provider, writes `~/.ogham/config.toml` and `~/.ogham/config.env` (permissions `0600`). It will attempt to auto-register with Claude Code and **fail on locked-down machines** -- that failure is expected, not a problem. See the next section.
+3. **Pre-flight check:**
+   ```bash
+   ogham health                    # parallel probes, DB + embedder config (native is default)
+   ogham health --live-embedder    # burns one provider token; hits Gemini/Voyage/etc. for real
+   ogham health --sidecar --text   # route through Python sidecar, human-readable
+   ```
+4. **Drop this into your project's `CLAUDE.md`:**
+   ```markdown
+   ## Ogham shared memory
+   Invoke via Bash:
+       ogham search "what you're about to work on"
+       ogham store "what you learned" --tags type:decision
+       ogham list --limit 20
+   ```
+5. **Start Claude Code.** It will shell out to `ogham` via its Bash tool. Enterprise MCP policy doesn't apply -- nothing is registered.
+
+### Expected "failures" that aren't failures
+
+**`Cannot add an MCP server. Enterprise MCP configuration is active and has exclusive control over MCP servers.`**
+This is the policy blocking `claude mcp add ogham`. It's the exact situation the Go CLI was built to route around. The init wizard prints the manual command as a suggestion; don't re-run it, use the `CLAUDE.md` Bash workflow above instead.
+
+**First sidecar-backed command is slow (~15-30 s).**
+`uv tool run --from "ogham-mcp[...]"` downloads the Python distribution + provider SDK the first time. The download is cached per user, so the second run is fast. To skip the ephemeral install entirely: `uv tool install --refresh "ogham-mcp[postgres,gemini]"` once, then `export OGHAM_SIDECAR_CMD="ogham serve"` in your `.env`.
+
+**macOS `"ogham" cannot be opened because Apple cannot check it for malicious software`.**
+Binaries are not yet notarized. One-line fix: `xattr -d com.apple.quarantine /usr/local/bin/ogham`. Alternatively, ad-hoc sign with `codesign -s - --force --deep /usr/local/bin/ogham`, or right-click the binary in Finder and choose Open. The [download page](https://ogham-mcp.dev/download/) walks through all four options. Signed + notarized builds are tracked as a future distribution-polish item.
+
+**Other MCP clients on the same locked machine.** The enterprise policy applies to *Claude Code* specifically. Cursor / Windsurf / Codex / Claude Desktop have separate config systems. `ogham init` prints snippets for each -- try those too.
+
+## Troubleshooting
+
+**`error: Failed to spawn: ogham`**
+The ephemeral `uv tool run` couldn't find a Python project. Either set `OGHAM_SIDECAR_CMD="uv tool run --python 3.13 --from ogham-mcp ogham serve"` or install `ogham-mcp` as a permanent uv tool.
+
+**`No solution found when resolving tool dependencies: Python>=3.13`**
+Your shell's default Python is older than 3.13. The default command pins `--python 3.13`; if you overrode via `OGHAM_SIDECAR_CMD`, add `--python 3.13` there too.
+
+**`google-genai package not installed` / `voyageai not installed`**
+Your `~/.ogham/config.env` is missing the `OGHAM_SIDECAR_EXTRAS` line. This can happen if init was run with an older binary (pre-v0.3.0-rc2). Fix:
+```bash
+ogham init --yes --no-register    # re-runs the writer with extras derivation
+# or manually
+echo 'OGHAM_SIDECAR_EXTRAS=postgres,gemini' >> ~/.ogham/config.env
+```
+v0.3.0-rc2+ derives the extras automatically from your provider + backend choices.
+
+**`SUPABASE_URL is required for SupabaseBackend`**
+Python can't see your config. The Go binary reads `~/.ogham/config.env` and `$PWD/.env` on startup and forwards their values to the sidecar -- make sure one of those files has your credentials. Remember shell env > project `.env` > `~/.ogham/config.env`.
+
+**Sidecar starts cleanly but `list` returns no rows.**
+Check the profile: `ogham profile current`. If it's not what you expected, `ogham profile switch work` persists the change to config. Memories with `expires_at` in the past are hidden; `ogham profile ttl <name>` inspects the current TTL.
+
+**Dashboard shows "default" profile even though `ogham profile current` says "work".**
+Bug in v0.3.0-rc1 -- Python's `ogham dashboard` typer CLI hardcoded `--profile default="default"`. Fixed in v0.3.0-rc2 (Go passes `--profile <cfg.Profile>` explicitly) and in Python `ogham-mcp` v0.10.4+ (typer default is None, falls back to `settings.default_profile`). Upgrade both.
+
+**Profile changed but subprocesses still see the old value.**
+The Go CLI emits **both** `DEFAULT_PROFILE` (Python's name) and `OGHAM_PROFILE` (Go's name) in the subprocess env. If you manually edited `~/.ogham/config.toml` without running `ogham init --yes`, the env file may still hold the old value -- re-run init or edit `config.env` directly.
+
+**Switched embedding providers and search results look like noise.**
+Stored vectors were indexed under the old provider; cosine distance against a new provider's query vector is random. Fix: `uv tool run --from ogham-mcp[postgres,<new-provider>] ogham re-embed-all --profile <name>`. BM25 keyword matches still work in the meantime.
+
+## Config unification cheat sheet
+
+Everything is in `~/.ogham/config.toml` (Go canonical) and mirrored to `~/.ogham/config.env` (Python-readable). Both written by `ogham init`; keep in sync by editing one and running `ogham init --yes` to regenerate the other.
+
+| What you want to change | Where |
+|---|---|
+| Active profile | `ogham profile switch <name>` (writes both files) |
+| Embedding provider / key | `ogham init` (or edit env file + re-run `ogham init --yes`) |
+| Database connection | `ogham init` (or edit env file directly) |
+| Sidecar extras (`gemini`, `voyage`, etc.) | Derived by `ogham init` from your provider + backend choices; override with `OGHAM_SIDECAR_EXTRAS=...` in your shell or `.env` |
+| Full sidecar command | `OGHAM_SIDECAR_CMD="..."` shell override (highest priority) |
+
+## Status and roadmap
+
+| Version | What | Audience |
+|---|---|---|
+| v0.1 | Sidecar subcommands: `search`, `store`, `list`, `health`. Python sidecar spawn via MCP go-sdk. Dotenv loader. | Internal dogfood |
+| v0.2 | `ogham plugin openclaw` and `ogham plugin agent-zero` manifest subcommands. Still sidecar-backed. | Internal dogfood |
+| v0.3 | Native path becomes default for read subcommands. huh TUI `ogham init`, native `list / search / health / stats / profile / delete / cleanup / decay / audit / config show`. `ogham dashboard` subprocess-execs Prefab. | Internal dogfood |
+| v0.4 | Release infrastructure -- GoReleaser pipeline, GitHub Actions release workflow, release playbook. Private-repo release; Homebrew tap deferred to post-disclosure. | Internal dogfood (tagged 2026-04-20) |
+| **v0.5** | **Native store absorption.** Extraction (entities / dates / importance), five embedders absorbed (Gemini / Ollama / OpenAI / Voyage / Mistral -- all with shared SQLite cache). Native store orchestrator chains extraction → parallel embed + search → surprise → auto-link candidates → Postgres or Supabase PostgREST write. Python parity harness on a 97-memory corpus locks entity / date / importance agreement. Gateway client ctx-clean end to end. Preview flag promoted to default; `--legacy` keeps the sidecar path. | Internal dogfood |
+| **v0.6-alpha** | **Hybrid MCP proxy + wizard + schema polish.** `ogham serve` eager-spawns the Python sidecar and proxies every tool it exposes that isn't already native -- native handlers always win on name collision. Reconnect-on-death supervisor with 1s backoff + 15s spawn timeout recovers from Python crashes mid-session. Graceful degradation: `--no-sidecar` or a spawn failure drops to native-only. Auto-generated MCP tool JSON schemas via `github.com/invopop/jsonschema`. `ogham init` skips the API-key field for Ollama. `EMBEDDING_DIM` + provider URL env vars honoured. `SearchResult.Metadata` exposed natively. Dim-agnostic hybrid search RPC. **v0.7 Batch A CRUD:** delete_memory, cleanup_expired, list_profiles, set_profile_ttl, reinforce_memory, contradict_memory, update_memory, switch_profile, current_profile (sentinel-file state at `~/.ogham/active_profile`, Python sidecar reads it too). **v0.7 Batch B typed-store:** store_decision, store_fact, store_event, store_preference (thin wrappers around `native.Store` that inject a `type:<kind>` tag and structured jsonb metadata; tags and metadata stay separate so tag-filtered search keeps working). **v0.7 Batch C stats + config:** get_config (redacted), get_stats (per-profile totals + top sources/tags + TTL counters), get_cache_stats (shared SQLite embedding cache row count, size, hit/miss). **v0.7 Batch E graph walk:** link_unlinked, explore_knowledge (hybrid search + relationship traversal via `explore_memory_graph` RPC), find_related (traverse from a known memory via `get_related_memories` RPC), suggest_connections (inline recursive CTE over `memory_entities`). `store_decision.related_memories` now creates 'supports' edges natively -- related_memories rejection lifted. **Native-tool total: 24.** Python sidecar still owns compression + `re_embed_all` + dashboard. | Internal dogfood |
+| v0.6 | Multi-language stopwords + extraction (18 languages embedded via `//go:embed`; loader + registry in `internal/native/extraction/languages.go`). Recurrence extraction, narrower person-name regex. Scoring/extraction still uses the English word lists hardcoded in `scoring.go`; swapping to the YAML-loaded rules is a follow-up once a language detector lands. | Infrastructure shipped; wiring follow-up |
+| v0.7 | Intent detection (reformulation / ordering / multi-hop / summary / temporal) + `record_access` on retrieved memories. | Planned |
+| v0.8 | `re_embed_all` (Go re-embed pipeline), compression port (needs Go LLM chat client -- dependency on OpenRouter/Ollama chat integration). Remove the `--legacy` backward-compat alias (introduced as a hidden alias for `--sidecar` in v0.7.0-rc4; emits deprecation warning throughout v0.7.x). | Planned |
+| v0.8+ | Graph-walk tools (`explore_knowledge`, `find_related`, `suggest_connections`) absorbed via recursive CTEs. Compression + re-embed stay Python (need Go LLM chat client we don't have). Dashboard stays Python forever. | Planned |
+
+Dashboard and Prefab UI deliberately stay Python-side -- absorbing them would require rebuilding the frontend in Node, which the time saved does not justify.
+
+## Development
+
+```bash
+go build ./...               # everything compiles
+go vet ./...                 # lint
+go test ./...                # unit tests (hermetic)
+go test -race ./...          # race detector on concurrent paths
+make live                    # live-tagged smoke tests (real providers + Python sidecar)
+go build -tags gateway .     # build the gateway-passthrough variant
+go test -tags gateway ./...  # test the gateway variant
+```
+
+Pre-commit hooks (`pre-commit install`) run `go fmt`, `go vet`, `go build`, large-file and private-key checks.
+
+### Testing standard (locked 2026-04-20)
+
+Every new package under `internal/native/` ships the full due-diligence bundle:
+
+1. **Table-driven subtests** -- hand-picked readable regressions (first thing a future contributor reads).
+2. **PICT combinatorial matrix** -- `testdata/<model>.pict` committed with the generated `testdata/<model>.pict.tsv`. `make pict-regen` regenerates locally.
+3. **90% line coverage gate** -- CI fails below threshold for `internal/native/...`.
+4. **Fuzz tests** (`go test -fuzz`) on any regex or parser touching untrusted input.
+5. **Race detector** on concurrent paths (store orchestrator, embedder pool, sidecar lifecycle).
+6. **Benchmarks** on hot paths (extraction runs on every store).
+7. **Python parity harness** for cross-stack features -- diff Python vs Go output on a fixed corpus. See `internal/native/extraction/testdata/parity_corpus_97.json` for the current anchor.
+8. **`//go:build live` smoke tests** for anything that touches a real HTTP endpoint or subprocess -- opt-in, self-skip on missing precondition.
+
+PICT models are designed **before** the implementation -- the test axes drive the function signature. CI has no PICT regen check (different `pict` versions produce different row sets for the same model; canonical-sort wasn't enough); PR review catches drift between `.pict` and `.tsv`.
+
+### Project layout
+
+```
+ogham-cli/
+├── cmd/                     # cobra subcommands
+│   ├── root.go
+│   ├── health.go            # native default, --sidecar for Python probes
+│   ├── list.go              # native default, --sidecar for Python tool path
+│   ├── search.go            # native default, --sidecar for full retrieval pipeline
+│   ├── store.go             # native default, --sidecar for sidecar (compression / contradiction)
+│   ├── capabilities.go      # native-vs-sidecar matrix (ogham capabilities [--json])
+│   ├── serve.go             # MCP server -- native tools + hybrid sidecar proxy
+│   ├── auth.go / init.go / hooks.go / import_agent_zero.go / import.go / plugin.go
+│   └── helpers.go           # connectSidecar, JSON emitter, result unwrap, fallback notice
+├── internal/
+│   ├── sidecar/             # MCP client wrapping a Python subprocess (reconnect-supervised)
+│   ├── native/              # Go-native tool implementations (absorption surface)
+│   │   ├── config.go        # TOML + env precedence (env wins, EMBEDDING_DIM honoured)
+│   │   ├── envfile.go       # dotenv auto-loader
+│   │   ├── extraction/      # entities / dates / scoring + languages/*.yaml embed (18 langs, //go:embed)
+│   │   ├── cache/           # shared SQLite embedding cache (wire-compatible with Python)
+│   │   ├── store.go         # orchestrator: extraction -> parallel embed+search -> surprise -> auto-link -> write
+│   │   ├── typed_store.go   # store_decision/fact/event/preference wrappers (tag + metadata injection)
+│   │   ├── graph.go         # explore_knowledge, find_related, suggest_connections, link_unlinked, CreateRelationship
+│   │   ├── update.go        # UPDATE memories (re-embeds on content change); nil-vs-empty semantics for tags/metadata
+│   │   ├── active_profile.go # ~/.ogham/active_profile sentinel + env > sentinel > TOML resolution
+│   │   ├── maintenance.go   # delete, cleanup, decay, audit, update_confidence (reinforce/contradict)
+│   │   └── ...              # health, list, search, stats, profile
+│   ├── mcp/                 # MCP server-side handlers
+│   │   ├── native_handlers.go  # auto-schema-generated native tool handlers
+│   │   ├── proxy_handler.go    # generic sidecar proxy + RegisterProxiedTools
+│   │   └── proxy_handler_test.go  # 8 unit tests with fakeSidecar
+│   ├── agentzeroimport/     # Agent Zero FAISS pickle importer (Python subprocess)
+│   ├── config/              # sidecar-mode TOML loader (APIKey + GatewayURL)
+│   ├── gateway/             # HTTPS client (only compiled under //go:build gateway)
+│   └── mcp/                 # MCP server-mode tool forwarding
+└── main.go
+```
+
+## License
+
+MIT

@@ -20,8 +20,10 @@ fi
 . "${ROOT}/scripts/repo-slug.sh"
 PROFILE="$(repo_slug "${CWD}")"
 
-# 1. eager profile bootstrap (auto-create on switch)
-"${OGHAM}" profile switch "${PROFILE}" >/dev/null 2>&1 || true
+# 1. Report the per-repo profile WITHOUT switching the global active profile. The bridge passes
+#    --profile explicitly on every recall/capture/flush (and `ogham store --profile` auto-creates),
+#    so it never mutates ~/.ogham/active_profile -- your other Ogham usage keeps your normal profile.
+ACTIVE="$("${OGHAM}" profile current 2>/dev/null | sed -n 's/.*"profile"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
 
 # 2. binary drift check (ogham version subcommand -> JSON .version)
 INSTALLED="$("${OGHAM}" version 2>/dev/null | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
@@ -48,7 +50,7 @@ fi
 # only the orchestrator's curated prompts (never this hook output), so the isolation invariant holds.
 cat <<EOF
 ## superpowers-memory bridge -- orchestrator protocol (this session)
-The superpowers-memory bridge is active. Profile: ${PROFILE}. Binary: ${OGHAM}
+Lessons for THIS repo are stored in Ogham profile '${PROFILE}' -- every recall/capture/flush passes --profile explicitly; the bridge does NOT change your active Ogham profile${ACTIVE:+ (still '${ACTIVE}')}. Binary: ${OGHAM}
 You (the orchestrator/controller) mediate Ogham. Subagents must NEVER call ogham or this bridge -- only you do (isolation invariant, design §4.1).
 When doing subagent-driven work (brainstorming/planning then dispatching implementer/reviewer subagents):
 - BEFORE each dispatch, recall task-relevant lessons (best-effort; on empty/error just proceed) and fold any results into the curated subagent prompt as "hints to verify, not gospel" with their provenance:

@@ -30,11 +30,12 @@ Before dispatching a subagent, recall lessons scoped to the current task and fol
 this skill). Use the active per-repo profile (bootstrapped by the SessionStart hook).
 
 ```bash
-# Relevance-ranked top-K lessons for this task. `ogham search` takes a POSITIONAL query
-# (not --query) and runs native hybrid (vector + keyword) search against the active profile.
+# Relevance-ranked top-K lessons for this task. `ogham search` takes a POSITIONAL query (not --query).
+# Pass --profile EXPLICITLY -- use the per-repo profile named in the SessionStart banner
+# (superpowers-<repo-slug>); the bridge never relies on the active profile.
 # JSON output by default; sub-100ms native Go path (design §9).
 if [ -n "$OGHAM" ]; then
-  "$OGHAM" search "<short description of the task you are about to dispatch>" --limit 5 2>/dev/null || true
+  "$OGHAM" search "<short description of the task you are about to dispatch>" --profile "superpowers-<repo-slug>" --limit 5 2>/dev/null || true
 fi
 
 # Optional: a cached wiki-preamble at a chosen resolution. The design's §4.3 `wiki_preamble_level`

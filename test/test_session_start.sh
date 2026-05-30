@@ -12,6 +12,7 @@ fake="${work}/ogham"
 cat > "$fake" <<'FAKE'
 #!/usr/bin/env bash
 if [ "$1" = "profile" ] && [ "$2" = "switch" ]; then echo "$3" >> "${OGHAM_CALLS}"; exit 0; fi
+if [ "$1" = "profile" ] && [ "$2" = "current" ]; then printf '{"profile":"work"}\n'; exit 0; fi
 if [ "$1" = "version" ]; then printf '{"version": "%s"}\n' "${FAKE_VERSION:-0.7.3}"; exit 0; fi
 if [ "$1" = "store" ]; then echo "store $*" >> "${OGHAM_CALLS}"; exit 0; fi
 exit 0
@@ -23,10 +24,12 @@ chmod +x "$fake"
 printf '{"cwd":"%s"}' "$work" | OGHAM_BIN="$fake" FAKE_VERSION=0.7.3 OGHAM_CALLS="${work}/c" bash "$HOOK" >/dev/null 2>&1
 [ $? -eq 0 ] || { echo "  exit: expected 0"; rc=1; }
 
-# 2. Bootstraps a non-empty superpowers-<slug> profile (never a bare 'superpowers-')
+# 2. Names the per-repo profile in its output AND does NOT switch/mutate the active profile.
 out_calls="${work}/calls2"; : > "$out_calls"
-printf '{"cwd":"%s"}' "$work" | OGHAM_BIN="$fake" FAKE_VERSION=0.7.3 OGHAM_CALLS="$out_calls" bash "$HOOK" >/dev/null 2>&1
-grep -qE '^superpowers-[a-z0-9]' "$out_calls" || { echo "  profile: expected superpowers-<slug>, got '$(cat "$out_calls")'"; rc=1; }
+banner="$(printf '{"cwd":"%s"}' "$work" | OGHAM_BIN="$fake" FAKE_VERSION=0.7.3 OGHAM_CALLS="$out_calls" bash "$HOOK" 2>&1)"
+echo "$banner" | grep -qE "superpowers-[a-z0-9]" || { echo "  profile: expected the per-repo profile named in output, got '$banner'"; rc=1; }
+echo "$banner" | grep -qiE "not change|not changed|unchanged" || { echo "  profile: expected an 'active profile unchanged' statement, got '$banner'"; rc=1; }
+[ -s "$out_calls" ] && { echo "  profile: hook must NOT switch/store at session start (no active-profile mutation); calls='$(cat "$out_calls")'"; rc=1; }
 
 # 3. Drift warning when installed != pinned -- hermetic fixture ROOT (does NOT touch the real .tools/.version).
 #    The fixture must contain scripts/ogham-bin.sh so the hook can resolve the (fake) binary via OGHAM_BIN.

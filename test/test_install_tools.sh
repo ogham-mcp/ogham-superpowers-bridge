@@ -32,4 +32,46 @@ printf 'tampered' > "$blob"
 if verify_checksum "$blob" "blob.tar.gz" "$ck" 2>/dev/null; then echo "  verify_checksum: expected FAIL on mismatch"; rc=1; fi
 rm -f "$ck" "$blob"
 
+# classify_ogham: version-string -> go-cli | mcp | unknown
+[ "$(classify_ogham 0.7.5)" = "go-cli" ]  || { echo "  classify: 0.7.5 should be go-cli"; rc=1; }
+[ "$(classify_ogham 0.13.9)" = "go-cli" ] || { echo "  classify: 0.13.9 should be go-cli"; rc=1; }
+[ "$(classify_ogham 0.14.3)" = "mcp" ]    || { echo "  classify: 0.14.3 should be mcp"; rc=1; }
+[ "$(classify_ogham 1.0.0)" = "mcp" ]     || { echo "  classify: 1.0.0 should be mcp"; rc=1; }
+[ "$(classify_ogham '')" = "unknown" ]    || { echo "  classify: empty should be unknown"; rc=1; }
+
+# --use-system integration: adopt a Go-CLI fake (subprocess; isolated TOOLS_DIR; never touch real .tools)
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+INSTALL="${ROOT_DIR}/scripts/install-tools.sh"
+td="$(mktemp -d)"
+fakego="${td}/ogham-go"; cat > "$fakego" <<'FK'
+#!/usr/bin/env bash
+[ "$1" = "version" ] && { printf '{"version":"0.7.9","commit":"abc","go":"go1.26"}\n'; exit 0; }
+exit 0
+FK
+chmod +x "$fakego"
+out="$(SUPERPOWERS_TOOLS_DIR="${td}/tools" OGHAM_BIN="$fakego" bash "$INSTALL" --use-system 2>&1)"; ec=$?
+[ "$ec" = "0" ] || { echo "  use-system go: expected exit 0, got $ec ($out)"; rc=1; }
+[ -L "${td}/tools/ogham" ] || { echo "  use-system go: expected .tools/ogham symlink"; rc=1; }
+[ "$(cat "${td}/tools/.version" 2>/dev/null)" = "0.7.9" ] || { echo "  use-system go: expected .version 0.7.9"; rc=1; }
+
+# --use-system rejects an MCP-versioned (>=0.14) fake
+fakemcp="${td}/ogham-mcp"; cat > "$fakemcp" <<'FK'
+#!/usr/bin/env bash
+[ "$1" = "version" ] && { printf '{"version":"0.14.3"}\n'; exit 0; }
+exit 0
+FK
+chmod +x "$fakemcp"
+td2="$(mktemp -d)"
+if SUPERPOWERS_TOOLS_DIR="${td2}/tools" OGHAM_BIN="$fakemcp" bash "$INSTALL" --use-system >/dev/null 2>&1; then
+  echo "  use-system mcp: expected rejection (>=0.14)"; rc=1; fi
+[ -e "${td2}/tools/ogham" ] && { echo "  use-system mcp: must NOT create a symlink on reject"; rc=1; }
+
+# --use-system rejects a binary with NO version command (simulates Python: errors)
+fakenov="${td}/ogham-nov"; printf '#!/usr/bin/env bash\nexit 1\n' > "$fakenov"; chmod +x "$fakenov"
+td3="$(mktemp -d)"
+if SUPERPOWERS_TOOLS_DIR="${td3}/tools" OGHAM_BIN="$fakenov" bash "$INSTALL" --use-system >/dev/null 2>&1; then
+  echo "  use-system nover: expected rejection (no version JSON)"; rc=1; fi
+
+rm -rf "$td" "$td2" "$td3"
+
 exit "$rc"

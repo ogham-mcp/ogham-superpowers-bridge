@@ -9,13 +9,14 @@ set -uo pipefail
 REPO="ogham-mcp/ogham-cli"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-TOOLS_DIR="${ROOT}/.tools"
+TOOLS_DIR="${SUPERPOWERS_TOOLS_DIR:-${ROOT}/.tools}"
 VERSION_FILE="${TOOLS_DIR}/.version"
 
 UPGRADE=0
+USE_SYSTEM=0
 REQ_VERSION="${OGHAM_VERSION:-}"
 
-usage() { echo "usage: install-tools.sh [--upgrade] [--version vX.Y.Z]"; }
+usage() { echo "usage: install-tools.sh [--upgrade] [--version vX.Y.Z] [--use-system]"; }
 
 detect_asset() {
   local os arch
@@ -51,6 +52,48 @@ verify_checksum() {
   return 0
 }
 
+# ogham_cli_version <bin>: prints the JSON `.version` from `<bin> version`, or empty.
+ogham_cli_version() {
+  "$1" version 2>/dev/null | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1
+}
+
+# classify_ogham <version-string>: prints go-cli | mcp | unknown.
+# The Go ogham-cli is <0.14 (and emits JSON `version`); the Python ogham-mcp CLI is >=0.14
+# (and in fact lacks a `version` command, so an empty version => unknown => reject).
+classify_ogham() {
+  local ver="$1" major minor
+  [ -n "$ver" ] || { echo "unknown"; return 0; }
+  major="${ver%%.*}"; major="${major%%[!0-9]*}"
+  minor="${ver#*.}"; minor="${minor%%.*}"; minor="${minor%%[!0-9]*}"; [ -n "$minor" ] || minor=0
+  [ -n "$major" ] || { echo "unknown"; return 0; }
+  if [ "$major" -gt 0 ] || { [ "$major" -eq 0 ] && [ "$minor" -ge 14 ]; }; then
+    echo "mcp"
+  else
+    echo "go-cli"
+  fi
+}
+
+# do_use_system: adopt an already-installed Go ogham-cli ($OGHAM_BIN or PATH) by symlinking it into
+# .tools/ogham, after verifying it is the Go CLI (JSON version, <0.14). Rejects the Python ogham-mcp.
+do_use_system() {
+  local cand ver kind
+  if [ -n "${OGHAM_BIN:-}" ] && [ -x "${OGHAM_BIN}" ]; then cand="${OGHAM_BIN}"
+  else cand="$(command -v ogham || true)"; fi
+  [ -n "${cand}" ] || { echo "--use-system: no system ogham found (set OGHAM_BIN or run plain install)" >&2; return 1; }
+  ver="$(ogham_cli_version "${cand}")"
+  kind="$(classify_ogham "${ver}")"
+  case "${kind}" in
+    go-cli) : ;;
+    mcp) echo "--use-system: '${cand}' is v${ver} -- that's the Python ogham-mcp (>=0.14), not the Go ogham-cli. The bridge needs the Go CLI (JSON-default output, version/profile commands, native fast path). Run plain 'install-tools.sh' or point OGHAM_BIN at the Go binary." >&2; return 1 ;;
+    *) echo "--use-system: '${cand}' has no machine-readable 'version' JSON -- not the Go ogham-cli (the Python ogham-mcp CLI lacks a version command). Run plain 'install-tools.sh' or point OGHAM_BIN at the Go binary." >&2; return 1 ;;
+  esac
+  mkdir -p "${TOOLS_DIR}"
+  ln -sf "${cand}" "${TOOLS_DIR}/ogham"
+  printf '%s\n' "${ver}" > "${VERSION_FILE}"
+  echo "==> Adopted system ogham-cli v${ver}: ${TOOLS_DIR}/ogham -> ${cand}"
+  return 0
+}
+
 resolve_version() {
   if [ -n "${REQ_VERSION}" ]; then
     case "${REQ_VERSION}" in v*) printf '%s\n' "${REQ_VERSION}" ;; *) printf 'v%s\n' "${REQ_VERSION}" ;; esac
@@ -70,12 +113,15 @@ main() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --upgrade) UPGRADE=1 ;;
+      --use-system) USE_SYSTEM=1 ;;
       --version) [ -n "${2:-}" ] || { echo "--version requires an argument" >&2; usage; return 2; }; REQ_VERSION="$2"; shift ;;
       -h|--help) usage; return 0 ;;
       *) echo "unknown arg: $1" >&2; usage; return 2 ;;
     esac
     shift
   done
+
+  if [ "${USE_SYSTEM}" -eq 1 ]; then do_use_system; return $?; fi
 
   local version asset url tmp
   version="$(resolve_version)"

@@ -316,9 +316,9 @@ reintroduce the context pollution the design exists to prevent.
   dispatch and the recall call goes through the slower Python path. Cleaner than option 2; still
   loses on perf vs CLI. **Not preferred** given the §9 cold-start argument.
 
-**Tentative position (revisit next round):** package as a plugin (skill + hook + optional commands),
-but keep Ogham access as the CLI invoked by the orchestrator — do **not** auto-wire the MCP server
-at plugin scope. CLI wins on **both** axes that matter: (a) isolation by construction (subagents
+**Tentative position (revisit next round):** → **LOCKED in §14** (round 2). Package as a plugin
+(skill + hook + one manual command), keep Ogham access as the CLI invoked by the orchestrator — do
+**not** auto-wire the MCP server at plugin scope. CLI wins on **both** axes that matter: (a) isolation by construction (subagents
 structurally can't shell out to the orchestrator's Bash), and (b) sub-100ms native Go cold-start vs
 the MCP server's Python initialisation tax (§9), which compounds across the dozens of dispatches in
 a long orchestration. Distributable + versioned, with the isolation invariant *and* the perf
@@ -434,6 +434,9 @@ read back. The bridge MUST resolve to a *pinned released* `ogham-cli` Go binary,
 `command -v ogham` happens to return.
 
 ### 13.1 Hermetic layout
+> **Updated by §14:** the gitignored `.tools/ogham` layout below remains canonical, but the resolution
+> order now includes `${CLAUDE_PLUGIN_DATA}/bin/ogham` as the update-surviving target for the future
+> distributed case. See §14.2 (Q3) and §14.4.
 
 ```
 ogham-superpower-bridge/
@@ -478,3 +481,101 @@ A `brew install ogham-cli` global install works for ad-hoc dev use, but breaks t
 reproducibility contract: `brew upgrade` can silently move the binary under a running orchestration,
 and CI environments don't have brew. The hermetic `.tools/` layout is the same pattern Node uses for
 `node_modules/` and Python uses for `.venv/` — applied to a binary dependency.
+
+---
+
+## 14. Round 2 — packaging, install & hook decisions (LOCKED)
+
+- **Date:** 2026-05-30
+- **Status:** Locked (design-council subset + `ogham hooks` spike + ground-truth against the real binary).
+- **Supersedes:** the *tentative* positions in §10 and §13.1's binary-home assumption.
+- **Method:** a 3-lens design-council subset (Plugin-Architecture · Hermetic-Tooling ·
+  Isolation+Perf) + synthesizer deliberated the §10 carry-over questions; a task-0 spike read the
+  actual `ogham-cli` Go source for the `hooks`/`plugin` subcommands; all Ogham-internal claims were
+  ground-truthed against the installed binary (v0.7.3, darwin/arm64) and the current Anthropic plugin
+  + hooks docs.
+
+### 14.1 Facts verified this round (ground truth, not inference)
+- The binary exposes `ogham version` as a **subcommand** emitting JSON `{version, commit, …}`;
+  `ogham --version` errors (`unknown flag`). **The SessionStart drift-check must call
+  `ogham version`, not `--version`** — every council lens initially assumed the wrong form.
+- Subcommand surface confirmed: `recall`, `search`, `store`, `profile {current,list,switch,ttl}`,
+  `decay`, `cleanup`, `export`, `audit`, `stats`, plus `--sidecar`/`--python` and the native default.
+  This matches §9.
+- The **native path runs headless with no gateway/OAuth** — verified in source
+  (`internal/native/hooks.go` + `loadNativeIfReady`): `recall`/`search`/`store`/`profile` work
+  against a direct Postgres/Supabase backend. This is the §9 perf claim, confirmed in code.
+- Anthropic SessionStart hooks: **plain stdout on exit 0 is added to context** (the JSON
+  `hookSpecificOutput.additionalContext` form is only needed for `suppressOutput`/`sessionTitle`).
+  Non-zero exit = non-blocking `hook error` notice. So our hooks **must exit 0** on any
+  transport/drift error (graceful degradation, §6) — never error per call.
+
+### 14.2 Council verdicts (Q1–Q6, locked)
+| Q | Decision |
+|---|---|
+| **Q1 Commands** | Ship exactly **one** manual control as a skill (not the legacy `commands/` slot): `skills/flush/SKILL.md`, `disable-model-invocation: true`, surfaced as `/superpowers-memory:flush`. **No** `/ogham-eval` (the §8.2 replay benchmark is an offline harness, not an Ops verb); no `/status` in v0.1 (deferred, not rejected). User-facing namespace is `superpowers-memory:`, never an `ogham-` prefix. |
+| **Q2 Access route** | **LOCK CLI-via-orchestrator.** The orchestrator (only) invokes the pinned native Go `.tools/ogham` via Bash steps in the skill. **No** Ogham MCP server in plugin-scope `.mcp.json` — not unguarded, not with per-agent allowlists. CLI wins on *both* load-bearing invariants by construction: isolation (subagents can't shell out) + sub-100ms native cold-start (no Python/transport tax across dozens of dispatches). *Unanimous.* |
+| **Q3 Binary home** | Canonical = gitignored `.tools/ogham` (binary ignored; `.version`, `LICENSE`, `README.md` tracked for provenance). Resolution order: `$OGHAM_BIN` → `${CLAUDE_PLUGIN_ROOT:-$PWD}/.tools/ogham` → `${CLAUDE_PLUGIN_DATA}/bin/ogham` (update-surviving target for the future distributed case) → `command -v ogham` (loud-fail last resort). **Never bundle** the 20 MB platform-specific binary in the plugin tarball. For the current validation phase only path 2 is active. |
+| **Q4 Install rigor** | `scripts/install-tools.sh` with full rigor: pin from `.tools/.version` (or `$OGHAM_VERSION`); download `ogham-cli-${OS}-${ARCH}.tar.gz`, fetch `checksums.txt`, **SHA256-verify and fail loud** (do *not* inherit upstream's skip — §13.5); macOS `codesign --force --sign -` then `xattr -dr com.apple.quarantine`; `install` + `--upgrade` modes; **no auto-upgrade**. Documented limitation: same-release `checksums.txt` defends against network corruption, not a compromised upstream. |
+| **Q5 Build sequence** | **Build now (ungated):** `.gitignore`, `install-tools.sh`, `plugin.json`, `hooks/hooks.json`, the two skills (recall wired, **scribe distillation stubbed**), the staging-buffer schema. **Gate on a positive replay benchmark (§8.2):** scribe distillation prompt, capture signal-gate, flush dedup/merge, recall-injection framing, the §8 measurement harness. If the benchmark fails there is no scribe code to delete — the plugin degrades to empty recall (§6). *Unanimous.* |
+| **Q6 Skill shape / dist** | **One** skill `skills/superpowers-memory/SKILL.md` exposing both `recall` + `flush` verbs (shared buffer + profile state; both `disable-model-invocation: true`, orchestrator-dispatched). The `/superpowers-memory:flush` of Q1 is a thin manual entry point, not a second state owner. **No `marketplace.json` yet** — stay a private `claude --plugin-dir .` build through the benchmark + 2–3 clean real sessions, then publish with a real semver. |
+
+Recorded dissents (non-blocking): Lens C wanted a read-only `/status` (deferred); Lens B preferred
+`${CLAUDE_PLUGIN_DATA}`-first resolution (correct only once marketplace distribution lands).
+
+### 14.3 Spike verdict — `ogham hooks` (we hand-roll our own)
+Reading `cmd/hooks.go` + `internal/native/hooks.go` settled the "reuse OM's hooks?" question with a
+hard **no**:
+| Mechanism | Verdict |
+|---|---|
+| `ogham hooks install` | **Never use.** Mutates global `~/.claude/settings.json`, hardcodes a command assuming PATH (and writes the wrong name — see §14.10), and installs the *wrong topology*: `PostToolUse→post-tool` is the raw-action-trace auto-capture §4.2 forbids for our profile, and a blanket SessionStart dump is the claude-mem pattern §12 rejects. |
+| `ogham hooks run <event>` | **Don't reuse.** `session-start` = a generic `hybrid_search` context dump; `inscribe` = a metadata-only drain; `post-tool` = gateway-only capture. None match our orphan-flush + drift-check + eager-profile-bootstrap, nor our distilled-lesson taxonomy. |
+| Our `hooks/hooks.json` | **Hand-roll it**, plugin-scoped via `${CLAUDE_PLUGIN_ROOT}`, shelling out to the low-level verbs (`profile switch`, `version`, `recall`, `store`) on the verified native path. |
+
+### 14.4 Plugin component layout (concrete)
+```
+ogham-superpower-bridge/                 # the plugin root (loaded via --plugin-dir during validation)
+  .claude-plugin/
+    plugin.json                          # name: superpowers-memory; version omitted (git SHA) until publish
+  skills/
+    superpowers-memory/SKILL.md          # recall + flush verbs; disable-model-invocation; §13.2 resolution boilerplate; scribe stubbed
+    flush/SKILL.md                       # /superpowers-memory:flush — manual flush; disable-model-invocation
+  hooks/
+    hooks.json                           # SessionStart: eager profile bootstrap + ogham-version drift check + orphan-flush
+  scripts/
+    install-tools.sh                     # §14.2 Q4 install/--upgrade
+  .tools/
+    ogham                                # pinned binary (gitignored)
+    .version                             # "0.7.3" (tracked)
+    LICENSE  README.md                   # tracked (provenance)
+  .gitignore                             # ignores .tools/ogham and ./.superpowers-lessons.jsonl
+  .superpowers-lessons.jsonl             # staging buffer (gitignored; one typed §5 candidate per line)
+```
+Only `plugin.json` lives in `.claude-plugin/`; all component dirs sit at the plugin root (Anthropic layout).
+
+### 14.5 SessionStart hook contract (corrected)
+The SessionStart hook (needed regardless of benchmark outcome) does three things and **always exits 0**:
+1. **Profile bootstrap** — `ogham profile switch superpowers-<repo-slug>` with auto-create, so the
+   orphan-flush has a valid target on first run. `<repo-slug>` derived from the git remote basename
+   (fallback: cwd basename) of the repo superpowers is operating in.
+2. **Binary drift check** — parse `ogham version` JSON `.version`, compare to `.tools/.version`; on
+   mismatch, print a one-line stdout notice suggesting `scripts/install-tools.sh --upgrade`. Never block.
+3. **Orphan-flush** — if `./.superpowers-lessons.jsonl` is non-empty (crash orphan), flush it before
+   anything else.
+Any transport/drift error → emit nothing fatal, exit 0 (the §6 / claude-mem discipline, now also
+justified by the verified Anthropic exit-code semantics in §14.1).
+
+### 14.6 Deferred decisions that genuinely need the user (gate the §8.2 benchmark, not the scaffold)
+- **Benchmark pass threshold** — proposed starting bar: recall hit-rate > 40% *and* a measurable
+  intra-session redundant-exploration reduction. Confirm before the benchmark runs.
+- **Transcript corpus** — which repo(s)/sessions seed the ~15–25-task replay set (mined from
+  `.in_use/` and `~/.claude/projects/<slug>/agent-*.jsonl`).
+- **Marketplace identity** (publish-time only): `author`/`repository`/`license` + target marketplace.
+- **`caveman`** adoption (§11) — orthogonal; recommended "regardless," decided separately.
+
+### 14.7 Upstream contribution
+The spike's findings were filed as **`ogham-mcp/ogham-cli#7`** (binary-name bug in `hooks install`,
+PATH assumption, plugin-model divergence, gateway-hook error spam, metadata-only `inscribe`). Finding
+#3 there is the mirror image of this section: the correct Claude Code integration is a *plugin with
+its own `hooks/hooks.json`* — which is exactly what this bridge is. The bridge is effectively the
+reference implementation of what an `ogham plugin claude-code` emitter should scaffold.
